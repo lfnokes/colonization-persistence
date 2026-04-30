@@ -1,4 +1,7 @@
 #### In this script I will be running the API request to find relevant projects
+
+## FINAL list of keywords: "time", "time series", "time-series", "dynamic", "dynamics", "evolution", "longitudinal", "time point", "time-point", "time points", "time-points", "year", "years", "yearly", "month", "months", "monthly", "week", "weeks", "weekly", "day", "days", "daily", "long term", "long-term", "continued", "continuous", "monitoring", "monitored", "temporal", "fluctuation", "fluctuations", "interval", "intervals", "differential abundance"
+
 ## Step 1: Getting packages to get the data from the MGnify API
 library(httr)
 library(jsonlite)
@@ -110,7 +113,7 @@ keywords <- c("time", "time series", "time-series", "dynamic", "dynamics", "evol
                "year", "years", "yearly", "month", "months", "monthly", "week", "weeks", 
                "weekly", "day", "days", "daily", "long term", "long-term", "continued", 
                "continuous", "monitoring", "monitored", "temporal", "fluctuation", 
-               "fluctuations", "interval", "intervals", "differential abundance")  # Add your desired keywords
+               "fluctuations", "interval", "intervals", "differential abundance") 
 #Try adding "sequential" and "succession" to see if it increases the number of studies at all
 
 # Create a regex pattern for matching any of the keywords
@@ -133,8 +136,7 @@ keywords2 <- c("time", "time series", "time-series", "dynamic", "dynamics", "evo
               "weekly", "day", "days", "daily", "long term", "long-term", "continued", 
               "continuous", "monitoring", "monitored", "temporal", "fluctuation", 
               "fluctuations", "interval", "intervals", "differential abundance",
-              "sequential", "succession", "successional")  # Add your desired keywords
-#Try adding "sequential" and "succession/al" to see if it increases the number of studies at all (NOT DONE YET)
+              "sequential", "succession", "successional")
 
 pattern2 <- paste(keywords2, collapse = "|")  # "time|time-series"
 
