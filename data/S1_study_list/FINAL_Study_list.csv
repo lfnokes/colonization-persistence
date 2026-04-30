@@ -1,0 +1,27 @@
+where_data,Why_pub?,Sequencing_platform,Analysis_pipeline,Further_info,accession,secondary,experiment_type,study_code,Publication,Non_Mgnify_data_source,Pub_year
+Mgnify,NA,LS454,1,Mgnify,MGYS00000278,NA,Amplicon,M0278,https://doi.org/10.1073/pnas.1000081107,NA,2010
+Mgnify,NA,LS454,1,Mgnify,MGYS00000308,NA,Amplicon,M0308,https://doi.org/10.1111/1574-6941.12184,NA,2013
+Mgnify,NA,ILLUMINA,4.1,MGnify,MGYS00001068,NA,Amplicon,M1068,https://doi.org/10.1038/s41522-016-0011-0,NA,2017
+Pub,Metadata does not align with supplied pub metadata,LS454,Custom+SpeciateIT,Mgnify + Pub,MGYS00001070,NA,Amplicon,M1070,https://doi.org/10.1186/2049-2618-1-29,Additional file 3 in publication,2013
+Mgnify w/ENA metadata,NA,ILLUMINA,5,Mgnify,MGYS00001278,NA,Amplicon,M1278,https://doi.org/10.1186/gb-2014-15-7-r89,NA,2014
+Pub,Poor Mgnify/ENA Metadata,ILLUMINA,NINJA-OPS,Pub (S2),MGYS00001818,NA,Amplicon,M1818,https://doi.org/10.1038/s41526-017-0029-5,Interactive supplementary file 2 in publication,2017
+Mgnify w/ENA metadata,NA,ILLUMINA,4.1,Mgnify,MGYS00002184,NA,Amplicon,M2184,https://doi.org/10.1186/gb-2011-12-5-r50,NA,2011
+Mgnify w/ENA metadata,NA,ILLUMINA,5,Mgnify,MGYS00003619,NA,Assembly,M3619,https://doi.org/10.1016/j.cell.2016.04.007,NA,2016
+Mgnify w/ENA metadata,NA,ILLUMINA,4.1,Mgnify,MGYS00003659,NA,Amplicon,M3659,http://dx.doi.org/10.1126/science.1254529,NA,2014
+Mgnify w/ENA metadata,NA,ILLUMINA,4.1,Mgnify,MGYS00004708,NA,Metagenomic,M4708,10.1128/mbio.02863-20,NA,2021
+Mgnify w/pub metadata,NA,LS454,4.1,Mgnify,MGYS00004729,NA,Amplicon,M4729,https://doi.org/10.1371/journal.pntd.0005975,NA,2017
+Mgnify,NA,ILLUMINA,4.1,Mgnify,MGYS00005142,NA,Amplicon,M5142,10.1038/nature17940,NA,2016
+Mgnify w/pub metadata,NA,ILLUMINA,4.1,Mgnify,MGYS00005147,NA,Amplicon,M5147,https://doi.org/10.1038/nature13421,NA,2014
+Mgnify,NA,ILLUMINA,4.1,Mgnify,MGYS00005176,NA,Amplicon,M5176,https://doi.org/10.1128/msphere.00501-17,NA,2017
+Mgnify w/ENA metadata,NA,ILLUMINA,4.1,Mgnify,MGYS00005196,NA,Amplicon,M5196,https://doi.org/10.1073/pnas.1705899114,NA,2017
+Mgnify w/ENA metadata,NA,LS454,5,Mgnify,MGYS00005261,NA,Amplicon,M5261,https://doi.org/10.1371/journal.pone.0194060,NA,2018
+Figshare,Poor Mgnify/ENA Metadata,ILLUMINA,USEARCH+LTP,"Pub, custom pipeline: https:/github.com/ShadeLab/microbiome_trait_succession",MGYS00005378,MGYS00005377,Amplicon,M5378,https://doi.org/10.1038/s41467-019-08377-w,https://figshare.com/projects/Trait-based_succession_of_the_infant_gut_microbiome/58202,2019
+Mgnify,NA,ILLUMINA,5,Mgnify,MGYS00005792,MGYS00005791,Assembly,M5791,https://doi.org/10.1186/s13073-017-0490-5,NA,2017
+Mgnify,NA,ILLUMINA,5,Mgnify,MGYS00005817,MGYS00005816,Assembly,M5816,https://doi.org/10.1186/s13059-015-0639-8,NA,2015
+Mgnify w/ENA metadata,NA,ILLUMINA,5,Mgnify,MGYS00005860,MGYS00002425,Assembly,M5860,10.1038/nmicrobiol.2016.24,NA,2016
+IBDMDB,Did not include all samples in Mgnify data,ILLUMINA,Custom+Alkek,Pub + https://ibdmdb.org/,MGYS00006120,NA,Amplicon,M6120,https://doi.org/10.1038/s41586-019-1237-9,https://ibdmdb.org/,2019
+Mgnify,NA,ILLUMINA,5,Mgnify,MGYS00006263,NA,Amplicon,M6263,https://doi.org/10.1183/13993003.01932-2021,NA,2021
+Mgnify,NA,ILLUMINA,5,Mgnify,MGYS00006273,NA,Amplicon,M6273,https://doi.org/10.1128/msystems.00292-20,NA,2020
+Mgnify w/ENA metadata,NA,ILLUMINA,5,Mgnify,MGYS00006469,NA,Amplicon,M6469,https://doi.org/10.1371/journal.pone.0172811,NA,2017
+Mgnify w/ENA metadata,NA,ILLUMINA,5,Mgnify,MGYS00006530,NA,Amplicon,M6530,https://www.atsjournals.org/doi/10.1513/AnnalsATS.201903-270OC,NA,2019
+Mgnify,NA,ILLUMINA,5,Mgnify,MGYS00006638,NA,Amplicon,M6638,10.1186/s40168-023-01563-5,NA,2023

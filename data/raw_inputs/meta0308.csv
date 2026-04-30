@@ -1,0 +1,32 @@
+﻿sample_id,sample_env,run_id,num_samples,analysis_accession,host_subject_id,sampling_day
+ERS167164,fecal sample of Control 1 on day 14 of the follow-up,ERR164468,1,MGYA00000383,Control1,14
+ERS167160,fecal sample of Control 1 on day 1 of the follow-up,ERR164464,1,MGYA00000384,Control1,1
+ERS167165,fecal sample of Control 1 on day 21 of the follow-up,ERR164469,1,MGYA00000385,Control1,21
+ERS167166,fecal sample of Control 1 on day 28 of the follow-up,ERR164470,1,MGYA00000386,Control1,28
+ERS167167,fecal sample of Control 1 on day 37 of the follow-up,ERR164471,1,MGYA00000387,Control1,37
+ERS167161,fecal sample of Control 1 on day 3 of the follow-up,ERR164465,1,MGYA00000388,Control1,3
+ERS167168,fecal sample of Control 1 on day 42 of the follow-up,ERR164472,1,MGYA00000389,Control1,42
+ERS167162,fecal sample of Control 1 on day 5 of the follow-up,ERR164466,1,MGYA00000390,Control1,5
+ERS167163,fecal sample of Control 1 on day 7 of the follow-up,ERR164467,1,MGYA00000391,Control1,7
+ERS167141,"fecal sample of Patient 1 (IBS-diarrhea) on day 14 of the follow-up; bowel symptoms: presence of abdominal pain, abdominal distension and defecatory urgency, 4 stools (2 in form of diarrhea)",ERR164440,1,MGYA00000392,Patient1,14
+ERS167137,"fecal sample of Patient 1 (IBS-diarrhea) on day 1 of the follow-up; bowel symptoms: presence of abdominal pain, abdominal distension and defecatory urgency, 2 stools (1 in form of diarrhea)",ERR164434,1,MGYA00000393,Patient1,1
+ERS167142,"fecal sample of Patient 1 (IBS-diarrhea) on day 21 of the follow-up; bowel symptoms: presence of abdominal pain, 3 stools (2 in form of diarrhea)",ERR164441,1,MGYA00000395,Patient1,21
+ERS167143,"fecal sample of Patient 1 (IBS-diarrhea) on day 28 of the follow-up; bowel symptoms: presence of abdominal pain, abdominal distension and defecatory urgency, 3 stools (2 in form of diarrhea)",ERR164442,1,MGYA00000396,Patient1,28
+ERS167144,"fecal sample of Patient 1 (IBS-diarrhea) on day 37 of the follow-up; bowel symptoms: presence of abdominal pain, abdominal distension and defecatory urgency, 2 stools (2 in form of diarrhea)",ERR164443,1,MGYA00000397,Patient1,37
+ERS167138,"fecal sample of Patient 1 (IBS-diarrhea) on day 3 of the follow-up; bowel symptoms: presence of abdominal pain, abdominal distension and defecatory urgency, 2 stools (1 in form of diarrhea)",ERR164436,1,MGYA00000398,Patient1,3
+ERS167145,"fecal sample of Patient 1 (IBS-diarrhea) on day 42 of the follow-up; bowel symptoms: presence of abdominal pain, abdominal distension and defecatory urgency, 2 stools (2 in form of diarrhea)",ERR164444,1,MGYA00000399,Patient1,42
+ERS167139,"fecal sample of Patient 1 (IBS-diarrhea) on day 5 of the follow-up; bowel symptoms: presence of abdominal pain, abdominal distension and defecatory urgency, 3 stools (1 in form of diarrhea)",ERR164437,1,MGYA00000400,Patient1,5
+ERS167152,"fecal sample of Patient 2 (IBS-diarrhea) on day 14 of the follow-up; bowel symptoms: presence of abdominal pain, abdominal distension and defecatory urgency, 5 stools (5 in form of diarrhea)",ERR164456,1,MGYA00000403,Patient2,14
+ERS167146,"fecal sample of Patient 2 (IBS-diarrhea) on day 1 of the follow-up; bowel symptoms: presence of defecatory urgency, 3 stools (2 in form of diarrhea)",ERR164445,1,MGYA00000404,Patient2,1
+ERS167153,"fecal sample of Patient 2 (IBS-diarrhea) on day 21 of the follow-up; bowel symptoms: presence of abdominal pain, abdominal distension and defecatory urgency, 5 stools (5 in form of diarrhea)",ERR164457,1,MGYA00000406,Patient2,21
+ERS167154,"fecal sample of Patient 2 (IBS-diarrhea) on day 27 of the follow-up; bowel symptoms: presence of abdominal pain, abdominal distension and defecatory urgency, 4 stools (4 in form of diarrhea)",ERR164458,1,MGYA00000407,Patient2,27
+ERS167155,"fecal sample of Patient 2 (IBS-diarrhea) on day 28 of the follow-up; bowel symptoms: presence of abdominal pain, abdominal distension and defecatory urgency, 7 stools (7 in form of diarrhea)",ERR164459,1,MGYA00000408,Patient2,28
+ERS167147,"fecal sample of Patient 2 (IBS-diarrhea) on day 3 (morning) of the follow-up; bowel symptoms: presence of abdominal pain, abdominal distension and defecatory urgency, 11 stools (11 in form of diarrhea)",ERR164447,1,MGYA00000409,Patient2,3
+ERS167148,"fecal sample of Patient 2 (IBS-diarrhea) on day 3 (afternoon) of the follow-up; bowel symptoms: presence of abdominal pain, abdominal distension and defecatory urgency, 11 stools (11 in form of diarrhea)",ERR164449,1,MGYA00000411,Patient2,3.5
+ERS167156,"fecal sample of Patient 2 (IBS-diarrhea) on day 35 of the follow-up; bowel symptoms: presence of abdominal pain and abdominal distension, 2 stools (none in form of diarrhea)",ERR164460,1,MGYA00000413,Patient2,35
+ERS167157,fecal sample of Patient 2 (IBS-diarrhea) on day 42 of the follow-up; bowel symptoms: 5 stools (5 in form of diarrhea),ERR164461,1,MGYA00000414,Patient2,42
+ERS167158,"fecal sample of Patient 2 (IBS-diarrhea) on day 49 of the follow-up; bowel symptoms: presence of abdominal pain, abdominal distension and defecatory urgency, 4 stools (4 in form of diarrhea)",ERR164462,1,MGYA00000415,Patient2,49
+ERS167149,"fecal sample of Patient 2 (IBS-diarrhea) on day 4 of the follow-up; bowel symptoms: presence of abdominal pain, abdominal distension and defecatory urgency, 5 stools (5 in form of diarrhea)",ERR164451,1,MGYA00000416,Patient2,4
+ERS167159,"fecal sample of Patient 2 (IBS-diarrhea) on day 56 of the follow-up; bowel symptoms: presence of abdominal pain, abdominal distension and defecatory urgency, 4 stools (4 in form of diarrhea)",ERR164463,1,MGYA00000418,Patient2,56
+ERS167150,"fecal sample of Patient 2 (IBS-diarrhea) on day 5 of the follow-up; bowel symptoms: presence of abdominal pain, abdominal distension and defecatory urgency, 4 stools (4 in form of diarrhea)",ERR164453,1,MGYA00000419,Patient2,5
+ERS167151,fecal sample of Patient 2 (IBS-diarrhea) on day 7 of the follow-up; bowel symptoms: 4 stools (4 in form of diarrhea),ERR164455,1,MGYA00000423,Patient2,7

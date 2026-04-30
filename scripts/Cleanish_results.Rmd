@@ -1,0 +1,839 @@
+Here I am cleaning up my results code because it is getting messy
+
+Packages
+```{r}
+library(dplyr)
+library(tidyverse)
+library(strucchange)
+library(readr)
+library(rootSolve)
+library(readxl)
+library(MGnifyR)
+library(biomformat)
+library(island)
+library(readxl)
+library(DescTools)
+library(stringr)
+library(vegan)
+library(data.table)
+library(adespatial)
+library(codyn)
+library(RobustLinearReg)
+```
+
+
+Data
+```{r}
+data_.0001 <- read_rds("Studies_scripts//final_flat_.0001.rds")
+
+num_timepoints_.0001 <- lapply(data_.0001, function(study){
+  return(length(colnames(study))-9)
+})
+```
+
+
+Cleaning Data
+1. removing contaminants
+2. replacing all numbers in the "family" column with blanks because these are not resolved to family
+
+
+SHOULD I REPLACE ALL BLANK FAMILIES WITH UNKNOWNS SO I CAN INCLUDE ALL DATA?
+NO!!!! Think about it - the ones that aren't resolved to family are grouping multiple families together so it groups these levels together. (think about why you are looking at family).
+- justification for family as level: level that includes as much diversity and as many samples across the board as possible (some don't resolve all the way to genus, order was too broad not enough diversity)
+- potentially do genus as well????????
+
+3. Creating a data frame with no rows that will produce artifacts with the model (rows with fewer than 2 transitions), while retaining information about those rows in a separate data table.
+```{r}
+##Trying to remove chloroplasts, mitochondria, and non-microbial DNA
+remove_contaminants <- function(df, tax_cols = 1:9, patterns = c("Chloroplast", "Mitochondria", "Metazoa", "Plantae")) {
+  # Create regex pattern
+  pattern <- paste(patterns, collapse = "|")
+  
+  # Subset taxonomy columns
+  tax_data <- df[, tax_cols]
+  
+  # Create a logical vector for rows to keep
+  # TRUE if none of the taxonomy columns contain the pattern
+  keep <- !apply(tax_data, 1, function(row) {
+    any(grepl(pattern, row, ignore.case = TRUE))
+  })
+  
+  # Return the cleaned dataframe
+  df[keep, ]
+}
+
+data_.0001_clean <- lapply(data_.0001, remove_contaminants)
+#removing numbers from the family column
+data_.0001_clean <- lapply(data_.0001_clean, function(df) {
+  # Replace if 'family' is only digits (as string or number)
+  df$family <- as.character(df$family)  # ensure it's character
+  df$family[grepl("\\d", df$family)] <- ""
+  return(df)
+})
+
+#removing artifacts
+analyze_transitions <- function(vec) {
+  pa <- as.numeric(vec)
+  transitions <- sum(diff(pa) != 0, na.rm = TRUE)
+
+  if (all(pa == 1)) return("all_1s")
+  if (all(pa == 0)) return("all_0s")
+  if (transitions == 1) {
+    first_change <- which(diff(pa) != 0)[1]
+    from <- pa[first_change]
+    to <- pa[first_change + 1]
+    if (from == 0 && to == 1) return("0_to_1")
+    if (from == 1 && to == 0) return("1_to_0")
+  }
+
+  return(NA)
+}
+
+process_otu_list <- function(otu_list) {
+  # Output list of filtered tables
+  filtered_list <- list()
+  # Data frame of removed rows and reasons
+  removal_log <- data.frame()
+
+  for (i in seq_along(otu_list)) {
+    df <- otu_list[[i]]
+    tax_cols <- df[, 1:9]
+    pa_cols <- df[, 10:ncol(df)]
+
+    # Analyze each row
+    removal_reasons <- apply(pa_cols, 1, analyze_transitions)
+
+    # Keep rows without a removal reason
+    keep_idx <- is.na(removal_reasons)
+    filtered_list[[i]] <- df[keep_idx, ]
+
+    # Store the removed rows and reasons
+    if (any(!keep_idx)) {
+      removed <- df[!keep_idx, 1:9]
+      removed$reason <- removal_reasons[!keep_idx]
+      removed$source_table <- names(otu_list)[i]
+      removal_log <- rbind(removal_log, removed)
+    }
+  }
+
+  return(list(filtered_otus = filtered_list, removed_info = removal_log))
+}
+
+removed_artifacts <- process_otu_list(data_.0001_clean)
+tables_no_artifacts <- removed_artifacts$filtered_otus
+names(tables_no_artifacts) <- names(data_.0001_clean)
+removed_no_artifacts <- removed_artifacts$removed_info
+
+```
+
+Running the colonization-extinction model on these datasets.
+```{r}
+get_ce_params_fam <- function(otu_table) {
+  ran <- 10:length(colnames(otu_table))
+  fam <- island::irregular_single_dataset(otu_table, ran, c = 0.00001, e = 0.00001,
+                                          column = "family", n = 1)
+  
+  fam_c <- fam$c[-1]
+  fam_e <- fam$e[-1]
+  
+  print("done")
+  
+  return(list("fam_c" = fam_c, "fam_e" = fam_e, "details" = fam))
+}
+
+suppressWarnings({
+  fam_.0001 <- lapply(data_.0001_clean, get_ce_params_fam)
+})
+
+suppressWarnings({
+  fam_no_art <- lapply(tables_no_artifacts, get_ce_params_fam)
+})
+```
+
+
+Getting Rho, variance, and number of unique families for each dataset
+```{r}
+max_results.0001 <- lapply(fam_.0001, function(fam_result){
+  fam_result$famrichness <- length(fam_result$fam_c)
+  fam_result$total_richness <- sum(fam_result$details$N)
+  fam_result$distinct_families <- length(unique(fam_result$fam_c))
+  return(fam_result)
+})
+
+max_results_no_art <- lapply(fam_no_art, function(fam_result){
+  fam_result$famrichness <- length(fam_result$fam_c)
+  fam_result$total_richness <- sum(fam_result$details$N)
+  fam_result$distinct_families <- length(unique(fam_result$fam_c))
+  return(fam_result)
+})
+
+compute_cp_rho <- function(ce_data) {
+  if(length(ce_data$fam_c) > 1){
+    result <- cor.test(ce_data$fam_c, 1/ce_data$fam_e, method = "spearman")
+    n <- length(ce_data$fam_c)
+    result$n <- n
+    result$total_richness <- ce_data$total_richness
+    result$distinct_families <- ce_data$distinct_families
+  }
+  else{
+    result <- list()
+    result$estimate <- NA
+    result$p.value <- NA
+    n <- length(ce_data$fam_c)
+    result$n <- n
+    result$total_richness <- ce_data$total_richness
+    result$distinct_families <- ce_data$distinct_families
+  }
+  return(result)
+}
+
+cp_rho_list.0001 <- lapply(max_results.0001, compute_cp_rho)
+cp_rho_list_no_art <- lapply(max_results_no_art, compute_cp_rho)
+
+result.0001_df <- do.call(rbind, lapply(names(cp_rho_list.0001), function(id) {
+  item <- cp_rho_list.0001[[id]]
+  data.frame(
+    ID = id,
+    rho = item$estimate,
+    p_value = item$p.value,
+    n = item$n,
+    richness = item$total_richness,
+    distinct_families = item$distinct_families,
+    stringsAsFactors = FALSE
+  )
+}))
+
+result.0001_df$num_timepoint <- num_timepoints_.0001
+
+result_no_art_df <- do.call(rbind, lapply(names(cp_rho_list_no_art), function(id) {
+  item <- cp_rho_list_no_art[[id]]
+  data.frame(
+    ID = id,
+    rho = item$estimate,
+    p_value = item$p.value,
+    n = item$n,
+    richness = item$total_richness,
+    distinct_families = item$distinct_families,
+    stringsAsFactors = FALSE
+  )
+}))
+
+result_no_art_df$num_timepoint <- num_timepoints_.0001
+
+```
+
+Cleaning up the data
+```{r}
+#removing extra data (duplicate samples) and nonhuman samples
+view(result.0001_df)
+biomes_to_keep <- result.0001_df[c(1,2,38,42,699:733),]
+view(biomes_to_keep)
+final_biome_list.0001 <- result.0001_df %>%
+  filter(!str_detect(ID, "extra|Cat|House|Dog|Bgtw"))
+##Adding back corrected mistakes
+final_biome_list.0001 <- rbind(final_biome_list.0001, biomes_to_keep)
+final_biome_list.0001 <- final_biome_list.0001 %>%
+  filter(!str_detect(ID, "MT5147_Bgtw3.M_gut.extra"))
+
+#####total biome/subject combinations!!!!
+final_biome_list.0001$rho <- as.character(final_biome_list.0001$rho)
+final_biome_list.0001$rho[which(str_detect(final_biome_list.0001$rho, "-1")==TRUE)] <- NA
+final_biome_list.0001$rho <- as.numeric(final_biome_list.0001$rho)
+final_biome_list.0001$rho[which(final_biome_list.0001$rho==-1)] <- NA
+final_biome_list.0001$rho[which(final_biome_list.0001$rho==1)] <- NA
+final_biome_list.0001$z <- lapply(final_biome_list.0001$rho, FisherZ)
+final_biome_list.0001$v <- 1/(final_biome_list.0001$n-3)
+final_biome_list.0001 <- as.data.table(final_biome_list.0001)
+final_biome_list.0001 <- final_biome_list.0001[, c("study_ID", "subject_id", "biome_ID") := tstrsplit(ID, "_")]
+final_biome_list.0001 <- as.data.frame(final_biome_list.0001)
+final_biome_list.0001$z <- as.numeric(final_biome_list.0001$z) 
+final_biome_list.0001$num_timepoint <- as.numeric(final_biome_list.0001$num_timepoint)
+final_biome_list.0001 <- final_biome_list.0001[-c(1:2),]
+
+write.csv(final_biome_list.0001, "final_biome_list.0001.csv")
+view(final_biome_list.0001)
+
+##############################################################################
+
+###Doing the same thing for no_art
+#removing extra data (duplicate samples) and nonhuman samples
+view(result_no_art_df)
+biomes_to_keep_no_art <- result_no_art_df[c(1,2,38,42,699:733),]
+view(biomes_to_keep)
+final_biome_list_no_art <- result_no_art_df %>%
+  filter(!str_detect(ID, "extra|Cat|House|Dog|Bgtw"))
+##Adding back corrected mistakes
+final_biome_list_no_art <- rbind(final_biome_list_no_art, biomes_to_keep_no_art)
+final_biome_list_no_art <- final_biome_list_no_art %>%
+  filter(!str_detect(ID, "MT5147_Bgtw3.M_gut.extra"))
+
+#####total biome/subject combinations!!!!
+final_biome_list_no_art$rho <- as.character(final_biome_list_no_art$rho)
+final_biome_list_no_art$rho[which(str_detect(final_biome_list_no_art$rho, "-1")==TRUE)] <- NA
+final_biome_list_no_art$rho <- as.numeric(final_biome_list_no_art$rho)
+final_biome_list_no_art$rho[which(final_biome_list_no_art$rho==-1)] <- NA
+final_biome_list_no_art$rho[which(final_biome_list_no_art$rho==1)] <- NA
+final_biome_list_no_art$z <- lapply(final_biome_list_no_art$rho, FisherZ)
+final_biome_list_no_art$v <- 1/(final_biome_list_no_art$n-3)
+final_biome_list_no_art <- as.data.table(final_biome_list_no_art)
+final_biome_list_no_art <- final_biome_list_no_art[, c("study_ID", "subject_id", "biome_ID") := tstrsplit(ID, "_")]
+final_biome_list_no_art <- as.data.frame(final_biome_list_no_art)
+final_biome_list_no_art$z <- as.numeric(final_biome_list_no_art$z) 
+final_biome_list_no_art$num_timepoint <- as.numeric(final_biome_list_no_art$num_timepoint)
+final_biome_list_no_art <- final_biome_list_no_art[-c(1:2),]
+
+view(final_biome_list_no_art)
+
+write.csv(final_biome_list_no_art, "final_biome_list_no_art.csv")
+
+```
+
+
+Another thing I need to calculate for the two datasets separately is slopes
+```{r}
+compute_log_cp_relationship <- function(ce_data, study_id) {
+  result <- tryCatch({
+    if (length(ce_data$fam_c) > 1) {
+      model <- lm(log(ce_data$fam_c) ~ log(1 / ce_data$fam_e))
+      s <- summary(model)
+      attr(s, "study_id") <- study_id
+      s
+    } else {
+      NA
+    }
+  }, warning = function(w) {
+    message(paste("Warning for:", study_id, "-", conditionMessage(w)))
+    return(NA)
+  }, error = function(e) {
+    message(paste("Error for:", study_id, "-", conditionMessage(e)))
+    return(NA)
+  })
+  return(result)
+}
+
+compute_log_pc_relationship <- function(ce_data, study_id) {
+  result <- tryCatch({
+    if (length(ce_data$fam_c) > 1) {
+      c <- log(ce_data$fam_c)
+      p <- log(1/ce_data$fam_e)
+      model <- lm(p~c)
+      s <- summary(model)
+      attr(s, "study_id") <- study_id
+      s
+    } else {
+      NA
+    }
+  }, warning = function(w) {
+    message(paste("Warning for:", study_id, "-", conditionMessage(w)))
+    return(NA)
+  }, error = function(e) {
+    message(paste("Error for:", study_id, "-", conditionMessage(e)))
+    return(NA)
+  })
+  return(result)
+}
+
+cp_log_slopes.0001 <- mapply(
+  compute_log_cp_relationship,
+  ce_data = max_results.0001,
+  study_id = names(max_results.0001),
+  SIMPLIFY = FALSE
+)
+cp_log_slopes.0001$M0278_Infant1_gut$coefficients[2,1]
+
+se_and_slope <- do.call(rbind,(lapply(cp_log_slopes.0001, function(result){
+  if(!is.na(result[1])){
+    slope <- result$coefficients[2,1]
+    ste <- result$coefficients[2,2]
+    slope_p <- result$coefficients[2,4]
+  }else{
+    slope <- NA
+    ste <- NA
+    slope_p <- NA
+  }
+  row = data.frame("slope" = slope, "ste" = ste, "slope_p" = slope_p)
+  return(row)
+})))
+se_and_slope$ID <- rownames(se_and_slope)
+
+merged.0001 <- se_and_slope %>%
+  inner_join(x = se_and_slope, y = final_biome_list.0001, by = join_by(ID==ID))
+
+pc_log_slopes.0001 <- mapply(
+  compute_log_pc_relationship,
+  ce_data = max_results.0001,
+  study_id = names(max_results.0001),
+  SIMPLIFY = FALSE
+)
+
+se_and_slope_reverse <- do.call(rbind,(lapply(pc_log_slopes.0001, function(result){
+  if(!is.na(result[1])){
+    slope <- result$coefficients[2,1]
+    ste <- result$coefficients[2,2]
+    slope_p <- result$coefficients[2,4]
+  }else{
+    slope <- NA
+    ste <- NA
+    slope_p <- NA
+  }
+  row = data.frame("pc_slope" = slope, "pc_ste" = ste, "pc_slope_p" = slope_p)
+  return(row)
+})))
+se_and_slope_reverse$ID <- rownames(se_and_slope_reverse)
+
+merged.0001 <- se_and_slope_reverse %>%
+  inner_join(x = se_and_slope_reverse, y = merged.0001, by = join_by(ID==ID))
+
+#########################################################
+#for no_art
+cp_log_slopes_no_art <- mapply(
+  compute_log_cp_relationship,
+  ce_data = max_results_no_art,
+  study_id = names(max_results_no_art),
+  SIMPLIFY = FALSE
+)
+
+se_and_slope_no_art <- do.call(rbind,(lapply(cp_log_slopes_no_art, function(result){
+  if(!is.na(result[1])){
+    slope <- result$coefficients[2,1]
+    ste <- result$coefficients[2,2]
+    slope_p <- result$coefficients[2,4]
+  }else{
+    slope <- NA
+    ste <- NA
+    slope_p <- NA
+  }
+  row = data.frame("slope" = slope, "ste" = ste, "slope_p" = slope_p)
+  return(row)
+})))
+se_and_slope_no_art$ID <- rownames(se_and_slope_no_art)
+
+merged_no_art <- se_and_slope_no_art %>%
+  inner_join(x = se_and_slope_no_art, y = final_biome_list_no_art, by = join_by(ID==ID))
+
+pc_log_slopes_no_art <- mapply(
+  compute_log_pc_relationship,
+  ce_data = max_results_no_art,
+  study_id = names(max_results.0001),
+  SIMPLIFY = FALSE
+)
+
+se_and_slope_reverse_no_art <- do.call(rbind,(lapply(pc_log_slopes_no_art, function(result){
+  if(!is.na(result[1])){
+    slope <- result$coefficients[2,1]
+    ste <- result$coefficients[2,2]
+    slope_p <- result$coefficients[2,4]
+  }else{
+    slope <- NA
+    ste <- NA
+    slope_p <- NA
+  }
+  row = data.frame("pc_slope" = slope, "pc_ste" = ste, "pc_slope_p" = slope_p)
+  return(row)
+})))
+se_and_slope_reverse_no_art$ID <- rownames(se_and_slope_reverse_no_art)
+
+merged_no_art <- se_and_slope_reverse_no_art %>%
+  inner_join(x = se_and_slope_reverse_no_art, y = merged_no_art, by = join_by(ID==ID))
+
+write.csv(merged.0001, "merged_data_nobeta.0001.csv")
+write.csv(merged_no_art, "merged_data_nobeta_no_art.csv")
+
+```
+
+Now I am going to get all of this info on the genus level
+```{r}
+data_.0001_genus <- lapply(data_.0001_clean, function(df) {
+  # Replace if 'family' is only digits (as string or number)
+  df$family <- as.character(df$genus)  # ensure it's character
+  df$family[grepl("\\d", df$genus)] <- ""
+  return(df)
+})
+
+data_no_art_genus <- lapply(tables_no_artifacts, function(df) {
+  # Replace if 'family' is only digits (as string or number)
+  df$family <- as.character(df$genus)  # ensure it's character
+  df$family[grepl("\\d", df$genus)] <- ""
+  return(df)
+})
+
+get_ce_params_gen <- function(otu_table) {
+  ran <- 10:length(colnames(otu_table))
+  fam <- island::irregular_single_dataset(otu_table, ran, c = 0.00001, e = 0.00001,
+                                          column = "genus", n = 1)
+  
+  fam_c <- fam$c[-1]
+  fam_e <- fam$e[-1]
+  
+  print("done")
+  
+  return(list("gen_c" = fam_c, "gen_e" = fam_e, "details" = fam))
+}
+
+suppressWarnings({
+  gen_.0001 <- lapply(data_.0001_genus, get_ce_params_gen)
+})
+
+suppressWarnings({
+  gen_no_art <- lapply(data_no_art_genus, get_ce_params_gen)
+})
+
+max_results_gen.0001 <- lapply(gen_.0001, function(fam_result){
+  fam_result$genrichness <- length(fam_result$gen_c)
+  fam_result$total_richness <- sum(fam_result$details$N)
+  fam_result$distinct_genera <- length(unique(fam_result$gen_c))
+  return(fam_result)
+})
+
+max_results_gen_no_art <- lapply(gen_no_art, function(fam_result){
+  fam_result$genrichness <- length(fam_result$gen_c)
+  fam_result$total_richness <- sum(fam_result$details$N)
+  fam_result$distinct_genera <- length(unique(fam_result$gen_c))
+  return(fam_result)
+})
+
+compute_cp_rho_gen <- function(ce_data) {
+  if(length(ce_data$gen_c) > 1){
+    result <- cor.test(ce_data$gen_c, 1/ce_data$gen_e, method = "spearman")
+    n <- length(ce_data$gen_c)
+    result$n <- n
+    result$total_richness <- ce_data$total_richness
+    result$distinct_genera <- ce_data$distinct_genera
+  }
+  else{
+    result <- list()
+    result$estimate <- NA
+    result$p.value <- NA
+    n <- length(ce_data$gen_c)
+    result$n <- n
+    result$total_richness <- ce_data$total_richness
+    result$distinct_genera <- ce_data$distinct_genera
+  }
+  return(result)
+}
+
+cp_rho_list_gen.0001 <- lapply(max_results_gen.0001, compute_cp_rho_gen)
+cp_rho_list_gen_no_art <- lapply(max_results_gen_no_art, compute_cp_rho_gen)
+
+result_gen.0001_df <- do.call(rbind, lapply(names(cp_rho_list_gen.0001), function(id) {
+  item <- cp_rho_list_gen.0001[[id]]
+  data.frame(
+    ID = id,
+    rho = item$estimate,
+    p_value = item$p.value,
+    n = item$n,
+    richness = item$total_richness,
+    distinct_genera = item$distinct_genera,
+    stringsAsFactors = FALSE
+  )
+}))
+
+result_gen.0001_df$num_timepoint <- num_timepoints_.0001
+
+result_no_art_gen_df <- do.call(rbind, lapply(names(cp_rho_list_gen_no_art), function(id) {
+  item <- cp_rho_list_gen_no_art[[id]]
+  data.frame(
+    ID = id,
+    rho = item$estimate,
+    p_value = item$p.value,
+    n = item$n,
+    richness = item$total_richness,
+    distinct_genera = item$distinct_genera,
+    stringsAsFactors = FALSE
+  )
+}))
+
+result_no_art_gen_df$num_timepoint <- num_timepoints_.0001
+
+#########################SLOPES########################################
+compute_log_cp_relationship_gen <- function(ce_data, study_id) {
+  result <- tryCatch({
+    if (length(ce_data$gen_c) > 1) {
+      model <- lm(log(ce_data$gen_c) ~ log(1 / ce_data$gen_e))
+      s <- summary(model)
+      attr(s, "study_id") <- study_id
+      s
+    } else {
+      NA
+    }
+  }, warning = function(w) {
+    message(paste("Warning for:", study_id, "-", conditionMessage(w)))
+    return(NA)
+  }, error = function(e) {
+    message(paste("Error for:", study_id, "-", conditionMessage(e)))
+    return(NA)
+  })
+  return(result)
+}
+
+compute_log_pc_relationship_gen <- function(ce_data, study_id) {
+  result <- tryCatch({
+    if (length(ce_data$gen_c) > 1) {
+      c <- log(ce_data$gen_c)
+      p <- log(1/ce_data$gen_e)
+      model <- lm(p~c)
+      s <- summary(model)
+      attr(s, "study_id") <- study_id
+      s
+    } else {
+      NA
+    }
+  }, warning = function(w) {
+    message(paste("Warning for:", study_id, "-", conditionMessage(w)))
+    return(NA)
+  }, error = function(e) {
+    message(paste("Error for:", study_id, "-", conditionMessage(e)))
+    return(NA)
+  })
+  return(result)
+}
+
+cp_log_slopes_gen.0001 <- mapply(
+  compute_log_cp_relationship_gen,
+  ce_data = max_results_gen.0001,
+  study_id = names(max_results_gen.0001),
+  SIMPLIFY = FALSE
+)
+
+se_and_slope_gen.0001 <- do.call(rbind,(lapply(cp_log_slopes_gen.0001, function(result){
+  if(!is.na(result[1])){
+    slope <- result$coefficients[2,1]
+    ste <- result$coefficients[2,2]
+    slope_p <- result$coefficients[2,4]
+  }else{
+    slope <- NA
+    ste <- NA
+    slope_p <- NA
+  }
+  row = data.frame("slope" = slope, "ste" = ste, "slope_p" = slope_p)
+  return(row)
+})))
+se_and_slope_gen.0001$ID <- rownames(se_and_slope_gen.0001)
+
+merged_gen.0001 <- se_and_slope_gen.0001 %>%
+  inner_join(x = se_and_slope_gen.0001, y = result_gen.0001_df, by = join_by(ID==ID))
+
+pc_log_slopes_gen.0001 <- mapply(
+  compute_log_pc_relationship_gen,
+  ce_data = max_results_gen.0001,
+  study_id = names(max_results_gen.0001),
+  SIMPLIFY = FALSE
+)
+
+se_and_slope_reverse_gen.0001 <- do.call(rbind,(lapply(pc_log_slopes_gen.0001, function(result){
+  if(!is.na(result[1])){
+    slope <- result$coefficients[2,1]
+    ste <- result$coefficients[2,2]
+    slope_p <- result$coefficients[2,4]
+  }else{
+    slope <- NA
+    ste <- NA
+    slope_p <- NA
+  }
+  row = data.frame("pc_slope" = slope, "pc_ste" = ste, "pc_slope_p" = slope_p)
+  return(row)
+})))
+se_and_slope_reverse_gen.0001$ID <- rownames(se_and_slope_reverse_gen.0001)
+
+merged_gen.0001 <- se_and_slope_reverse_gen.0001 %>%
+  inner_join(x = se_and_slope_reverse_gen.0001, y = merged_gen.0001, by = join_by(ID==ID))
+#####filter by list of studies included
+final_biome_list.0001$ID
+merged_gen.0001 <- merged_gen.0001 %>% filter(ID %in% final_biome_list.0001$ID)
+
+##################################################################
+#slope for no artifacts
+cp_log_slopes_gen_no_art <- mapply(
+  compute_log_cp_relationship_gen,
+  ce_data = max_results_gen_no_art,
+  study_id = names(max_results_gen_no_art),
+  SIMPLIFY = FALSE
+)
+
+se_and_slope_gen_no_art <- do.call(rbind,(lapply(cp_log_slopes_gen_no_art, function(result){
+  if(!is.na(result[1])){
+    slope <- result$coefficients[2,1]
+    ste <- result$coefficients[2,2]
+    slope_p <- result$coefficients[2,4]
+  }else{
+    slope <- NA
+    ste <- NA
+    slope_p <- NA
+  }
+  row = data.frame("slope" = slope, "ste" = ste, "slope_p" = slope_p)
+  return(row)
+})))
+se_and_slope_gen_no_art$ID <- rownames(se_and_slope_gen_no_art)
+
+merged_gen_no_art <- se_and_slope_gen_no_art %>%
+  inner_join(x = se_and_slope_gen_no_art, y = result_no_art_gen_df, by = join_by(ID==ID))
+
+pc_log_slopes_gen_no_art <- mapply(
+  compute_log_pc_relationship_gen,
+  ce_data = max_results_gen_no_art,
+  study_id = names(max_results_gen_no_art),
+  SIMPLIFY = FALSE
+)
+
+se_and_slope_reverse_gen_no_art <- do.call(rbind,(lapply(pc_log_slopes_gen_no_art, function(result){
+  if(!is.na(result[1])){
+    slope <- result$coefficients[2,1]
+    ste <- result$coefficients[2,2]
+    slope_p <- result$coefficients[2,4]
+  }else{
+    slope <- NA
+    ste <- NA
+    slope_p <- NA
+  }
+  row = data.frame("pc_slope" = slope, "pc_ste" = ste, "pc_slope_p" = slope_p)
+  return(row)
+})))
+se_and_slope_reverse_gen_no_art$ID <- rownames(se_and_slope_reverse_gen_no_art)
+
+merged_gen_no_art <- se_and_slope_reverse_gen_no_art %>%
+  inner_join(x = se_and_slope_reverse_gen_no_art, y = merged_gen_no_art, by = join_by(ID==ID))
+#####filter by list of studies included
+final_biome_list_no_art$ID
+merged_gen_no_art <- merged_gen_no_art %>% filter(ID %in% final_biome_list_no_art$ID)
+
+
+
+##############cleanup#####################
+cleanup <- function(biome_list) {
+  biome_list$rho <- as.character(biome_list$rho)
+  biome_list$rho[which(str_detect(biome_list$rho, "-1")==TRUE)] <- NA
+  biome_list$rho <- as.numeric(biome_list$rho)
+  biome_list$rho[which(biome_list$rho==-1)] <- NA
+  biome_list$rho[which(biome_list$rho==1)] <- NA
+  biome_list$z <- lapply(biome_list$rho, FisherZ)
+  biome_list$v <- 1/(biome_list$n-3)
+  biome_list <- as.data.table(biome_list)
+  biome_list <- biome_list[, c("study_ID", "subject_id", "biome_ID") := tstrsplit(ID, "_")]
+  biome_list <- as.data.frame(biome_list)
+  biome_list$z <- as.numeric(biome_list$z) 
+  biome_list$num_timepoint <- as.numeric(biome_list$num_timepoint)
+  return(biome_list)
+}
+
+merged_gen.0001_final <- cleanup(merged_gen.0001)
+merged_gen_no_art_final <- cleanup(merged_gen_no_art)
+
+write.csv(merged_gen.0001_final, "merged_gen.0001_final.csv")
+write.csv(merged_gen_no_art_final, "merged_gen_no_art_final.csv")
+view(merged_gen_no_art_final)
+```
+
+I want to record and save all taxonomic information and associated c/e pairs
+```{r}
+#Unfortunately, since some rows were probably removed that were part of a family or genus with another row, I need to record all c/e pairs for all family and genera in the artifact and no-artifact datasets. This will get extracted from the max_results tables
+extract_group_details <- function(study_list) {
+  # Initialize an empty list to hold results
+  result_list <- list()
+  
+  for (i in seq_along(study_list)) {
+    study <- study_list[[i]]
+    study_id <- names(study_list)[i]
+    
+    if (!"details" %in% names(study)) next
+    
+    details <- study$details
+    
+    # Skip if details is not a data.frame or data.table
+    if (!is.data.frame(details)) next
+    
+    # Remove the first row if Group is empty string
+    filtered_details <- details[details$Group != "", ]
+    
+    if (nrow(filtered_details) == 0) next
+    
+    # Add ID column
+    filtered_details$ID <- study_id
+    
+    # Select only the desired columns
+    selected <- filtered_details[, c("ID", "Group", "c", "e", "N", "NLL")]
+    
+    result_list[[length(result_list) + 1]] <- selected
+  }
+  
+  # Combine all into a single data frame
+  final_df <- do.call(rbind, result_list)
+  return(final_df)
+}
+
+all_fam_.0001 <- extract_group_details(max_results.0001)
+all_fam_no_art <- extract_group_details(max_results_no_art)
+all_gen_.0001 <- extract_group_details(max_results_gen.0001)
+all_gen_no_art <- extract_group_details(max_results_gen_no_art)
+
+write.csv(all_fam_.0001, "fam_ce_values.0001.csv")
+write.csv(all_fam_no_art, "fam_ce_values_no_art.csv")
+write.csv(all_gen_.0001, "gen_ce_values.0001.csv")
+write.csv(all_gen_no_art, "gen_ce_values_no_art.csv")
+write.csv(removed_no_artifacts ,"all_artifact_taxa.csv")
+
+OTU_tables_gen_fam_with_without_art <- list(data_.0001_clean, tables_no_artifacts)
+
+write_rds(OTU_tables_gen_fam_with_without_art, "all_tables_art_and_no.rds")
+
+```
+
+Below this point is where I will add the code for analyzing the global metrics of community beta diversity once I clean those up.
+
+FAVA!!!
+```{r}
+library(FAVA)
+
+#FAVA is a normalized compositional variation statistic for things like OTU tables. It demands a matrix with samples as rows, taxa as columns, and can be weighted by timepoint if I include timepoint columns.
+#First get the data:
+OTU_tables <- read_rds("data_.0001_noChloroplast.rds")
+included_names <- my_data.0001$ID
+final_whole_data <- OTU_tables[included_names]
+final_whole_data <- lapply(final_whole_data, function(df){
+  df <- df[,-c(1:9)]
+  return(df)
+})
+final_whole_data <- lapply(final_whole_data, t)
+#convert to proportions
+final_whole_data <- lapply(final_whole_data, function(df){
+  df <- df[which(rowSums(df)>0),]
+  df <- df / rowSums(df)
+  return(df)
+})
+final_whole_data <- lapply(final_whole_data, function(df){
+  df <- as.data.frame(df)
+  df$time <- as.numeric(rownames(df))
+  df <- df[,c(ncol(df), 1:(ncol(df)-1))]
+  return(df)
+})
+
+##dataset is ready
+fava_beans <- lapply(final_whole_data, function(df){
+  bean <- fava(df, 
+     K = ncol(df)-1,
+     time = "time")
+})
+fava_beans <- do.call(rbind, fava_beans)
+fava_df <- as.data.frame(fava_beans)
+fava_df$ID <- rownames(fava_df)
+fava_df$fava <- fava_df$V1
+fava_df <- fava_df[,-1]
+write.csv(fava_df, "fava_values.csv")
+
+```
+```{r}
+#Troubleshooting
+all_tables_half <- all_tables_art_and_no[[1]]
+
+decimal_check <- function(table){
+  columns <- colnames(table[,-c(1:9)])
+  columns <- as.numeric(columns)
+  dec <- which(columns < 1)
+  print(dec)
+}
+
+decimal_check(all_tables_half$M6273_reindeer_lung)
+
+lapply(all_tables_half,decimal_check)
+
+```
+

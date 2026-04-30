@@ -1,0 +1,2722 @@
+---
+title: "Cleanish_metaanalysis_metaregression"
+author: "Liam Nokes"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+Packages
+```{r}
+##Loading required packages
+library(metafor)
+library(clubSandwich)
+library(orchaRd)
+library(MuMIn)
+library(mice)
+library(metagear)
+library(here)
+library(DT)
+library(GoodmanKruskal)
+library(ggplot2)
+library(readxl)
+library(stringr)
+library(tidyverse)
+library(plotly)
+library(cowplot)
+library(grDevices)
+library(grid)
+library(gridGraphics)
+library(pander)
+library(formatR)
+setwd("Studies_scripts")
+```
+
+
+Data
+```{r}
+my_data.0001 <- read.csv("final_biome_list_true.0001.csv")
+my_data.0001$true_biome[which(my_data.0001$true_biome=="respiratory_oral")] <- "oral"
+
+stability_data <- read.csv("stability_df.csv")
+merged_with_slope <- read.csv("merged_metrics.csv")
+merged_data.0001 <- inner_join(my_data.0001, merged_with_slope, by = join_by(ID==ID))
+
+amount_of_families <- read.csv("distinct_families.csv")
+merged_data.0001 <- inner_join(merged_data.0001, amount_of_families, by = join_by(ID==ID))
+
+pc_slope_data <- read.csv("pc_slopes.csv")
+merged_data.0001 <- inner_join(merged_data.0001, pc_slope_data, by = join_by(ID==ID))
+
+fava_data <- read.csv("fava_values.csv")
+merged_data.0001 <- inner_join(merged_data.0001, fava_data, by = join_by(ID == ID))
+
+##now we have a merged_data.0001
+#view(merged_data.0001)
+#removing all of the old info
+no_rho_no_slope <- merged_data.0001[,c(2,11,15:26,31:39, 47)]
+no_rho_no_slope$pub_year_simple <- no_rho_no_slope$pub_year-mean(no_rho_no_slope$pub_year)
+
+#Adding in all of the new info
+family.0001 <- read.csv("merged_data_nobeta.0001.csv")
+family_no_art <- read.csv("merged_data_nobeta_no_art.csv")
+genus.0001 <- read.csv("merged_gen.0001_final.csv")
+genus_no_art <- read.csv("merged_gen_no_art_final.csv")
+#view(family.0001)
+#merging with the old info
+family.0001_complete <- inner_join(family.0001, no_rho_no_slope, by = join_by(ID==ID))
+family.0001_complete <- family.0001_complete %>%
+  mutate(study_ID = ifelse(study_ID == "MT5147", "M5147", study_ID))
+family.0001_complete$ste <- family.0001_complete$ste^2
+
+family_no_art_complete <- inner_join(family_no_art, no_rho_no_slope, by = join_by(ID==ID))
+family_no_art_complete <- family_no_art_complete %>%
+  mutate(study_ID = ifelse(study_ID == "MT5147", "M5147", study_ID))  
+family_no_art_complete$ste <- family_no_art_complete$ste^2
+
+genus.0001_complete <- inner_join(genus.0001, no_rho_no_slope, by = join_by(ID==ID))
+genus.0001_complete <- genus.0001_complete %>%
+  mutate(study_ID = ifelse(study_ID == "MT5147", "M5147", study_ID)) 
+genus.0001_complete$ste <- genus.0001_complete$ste^2
+
+genus_no_art_complete <- inner_join(genus_no_art, no_rho_no_slope, by = join_by(ID==ID))
+genus_no_art_complete <- genus_no_art_complete %>%
+  mutate(study_ID = ifelse(study_ID == "MT5147", "M5147", study_ID))
+genus_no_art_complete$ste <- genus_no_art_complete$ste^2
+
+
+#######These four datasets are the ones I will use for the meta-analysis^
+datasets <- list(
+  family.0001 = family.0001_complete,
+  family.no_art = family_no_art_complete,
+  genus.0001 = genus.0001_complete,
+  genus.no_art = genus_no_art_complete
+)
+
+datasets_slim <- datasets
+datasets_slim$family.0001 <- datasets_slim$family.0001[-which(datasets_slim$family.0001$distinct_families < 10),]
+datasets_slim$family.no_art <- datasets_slim$family.no_art[-which(datasets_slim$family.no_art$distinct_families < 10),]
+datasets_slim$genus.0001 <- datasets_slim$genus.0001[-which(datasets_slim$genus.0001$distinct_genera < 10),]
+datasets_slim$genus.no_art <- datasets_slim$genus.no_art[-which(datasets_slim$genus.no_art$distinct_genera < 10),]
+
+#counting participants and biomes
+participants_biomes <- do.call(rbind,lapply(datasets_slim, function(df){
+  participants <- length(unique(df$subject_id))
+  biomes <- length(unique(df$ID))
+  studies <- length(unique(df$study_ID))
+  row <- data.frame("participants" = participants, "biomes" = biomes, "studies" = studies)
+  return(row)
+}))
+
+###Adding these in case I add more analyses later
+family_ce_info <- read.csv("fam_ce_values.0001.csv")
+family_ce_no_art <- read.csv("fam_ce_values_no_art.csv")
+genus_ce_info <- read.csv("gen_ce_values.0001.csv")
+genus_ce_no_art <- read.csv("gen_ce_values_no_art.csv")
+all_removed <- read.csv("all_artifact_taxa.csv")
+
+```
+
+1.1 Bias analysis
+  a. visualize and address bias issues
+  b. do "leave-one-out" plots to visualize sensitivity issues
+```{r}
+#Publication year bias (often a negative relationship between study year and effect size)
+run_publication_year_bias_test <- function(data, effect_size_col, variance_col, level, no_art = FALSE) {
+  # Subset data
+  min_taxa_col <- ifelse(level == "family", "distinct_families", "distinct_genera")
+  data_filtered <- data[data[[min_taxa_col]] > 9, ]
+  
+  # Model label
+  art_status <- ifelse(no_art, "no_art", "0001")
+  model_label <- paste0("mod_", ifelse(effect_size_col == "z", "ML_Z", "slope"),
+                        "_pub_", substr(level, 1, 3), ".", art_status)
+  
+  # Try sparse = TRUE first
+  cat("##########################\n")
+  cat(model_label, "\n")
+  
+  try_sparse <- try({
+    model <- rma.mv(yi = data_filtered[[effect_size_col]],
+                    V = data_filtered[[variance_col]],
+                    mods = ~ pub_year_simple,
+                    random = list(~1 | study_ID,
+                                  ~1 | subject_id,
+                                  ~1 | biome_ID),
+                    method = "REML",
+                    data = data_filtered,
+                    sparse = TRUE)
+  }, silent = TRUE)
+
+  if (inherits(try_sparse, "try-error")) {
+    cat("Initial model failed to converge with sparse = TRUE. Retrying with sparse = FALSE...\n")
+    model <- rma.mv(yi = data_filtered[[effect_size_col]],
+                    V = data_filtered[[variance_col]],
+                    mods = ~ pub_year_simple,
+                    random = list(~1 | study_ID,
+                                  ~1 | subject_id,
+                                  ~1 | biome_ID),
+                    method = "REML",
+                    data = data_filtered,
+                    sparse = FALSE)
+  } else {
+    model <- try_sparse
+  }
+
+  print(summary(model))
+  return(model)
+}
+
+
+pub_models <- list()
+
+for (name in names(datasets)) {
+  dat <- datasets[[name]]
+  level <- ifelse(grepl("genus", name), "genus", "family")
+  no_art <- grepl("no_art", name)
+  
+  # RHO effect size
+  pub_models[[paste0("ML_Z_", name)]] <- run_publication_year_bias_test(dat, effect_size_col = "z", variance_col = "v", level = level, no_art = no_art)
+  
+  # BETA effect size
+  pub_models[[paste0("slope_", name)]] <- run_publication_year_bias_test(dat, effect_size_col = "slope", variance_col = "ste", level = level, no_art = no_art)
+}
+
+extract_model_summary <- function(model_list) {
+  results <- lapply(names(model_list), function(name) {
+    model <- model_list[[name]]
+
+    coefs <- model$beta
+    se <- model$se
+    zval <- model$zval
+    pval <- model$pval
+    ci.lb <- model$ci.lb
+    ci.ub <- model$ci.ub
+
+    # Use rownames since beta is a matrix
+    coef_names <- rownames(coefs)
+
+    # Sanity check
+    if (is.null(coef_names) || length(coef_names) != length(coefs)) {
+      return(data.frame(
+        model = name,
+        term = NA,
+        estimate = NA,
+        se = NA,
+        zval = NA,
+        pval = NA,
+        ci.lb = NA,
+        ci.ub = NA,
+        QM_stat = model$QM,
+        QM_df = model$QMdf[1],
+        QM_pval = model$QMp,
+        QE_stat = model$QE,
+        QE_df = model$QEdf,
+        QE_pval = model$QEp,
+        k = model$k,
+        stringsAsFactors = FALSE
+      ))
+    }
+
+    data.frame(
+      model = rep(name, length(coefs)),
+      term = coef_names,
+      estimate = as.numeric(coefs),
+      se = se,
+      zval = zval,
+      pval = pval,
+      ci.lb = ci.lb,
+      ci.ub = ci.ub,
+      QM_stat = rep(model$QM, length(coefs)),
+      QM_df = rep(model$QMdf[1], length(coefs)),
+      QM_pval = rep(model$QMp, length(coefs)),
+      QE_stat = rep(model$QE, length(coefs)),
+      QE_df = rep(model$QEdf, length(coefs)),
+      QE_pval = rep(model$QEp, length(coefs)),
+      k = rep(model$k, length(coefs)),
+      stringsAsFactors = FALSE
+    )
+  })
+
+  do.call(rbind, results)
+}
+
+pub_model_table <- extract_model_summary(pub_models)
+view(pub_models$ML_Z_family.0001$fit.stats)
+################################################
+
+#Detecting small study bias:
+run_small_study_bias_test <- function(data, effect_size_col, variance_col, level, no_art = FALSE) {
+  # Subset data
+  min_taxa_col <- ifelse(level == "family", "distinct_families", "distinct_genera")
+  data_filtered <- data[data[[min_taxa_col]] > 9, ]
+  data_filtered$sqrt_v <- sqrt(data_filtered[[variance_col]])
+  
+  # Model label
+  art_status <- ifelse(no_art, "no_art", "0001")
+  model_label <- paste0("mod_", ifelse(effect_size_col == "z", "ML_Z", "slope"),
+                        "_pub_", substr(level, 1, 3), ".", art_status)
+  
+  # Try sparse = TRUE first
+  cat("##########################\n")
+  cat(model_label, "\n")
+  
+  try_sparse <- try({
+    model <- rma.mv(yi = data_filtered[[effect_size_col]],
+                    V = data_filtered[[variance_col]],
+                    mods = ~ sqrt_v,
+                    random = list(~1 | study_ID,
+                                  ~1 | subject_id,
+                                  ~1 | biome_ID),
+                    method = "REML",
+                    data = data_filtered,
+                    sparse = TRUE)
+  }, silent = TRUE)
+
+  if (inherits(try_sparse, "try-error")) {
+    cat("Initial model failed to converge with sparse = TRUE. Retrying with sparse = FALSE...\n")
+    model <- rma.mv(yi = data_filtered[[effect_size_col]],
+                    V = data_filtered[[variance_col]],
+                    mods = ~ sqrt_v,
+                    random = list(~1 | study_ID,
+                                  ~1 | subject_id,
+                                  ~1 | biome_ID),
+                    method = "REML",
+                    data = data_filtered,
+                    sparse = FALSE)
+  } else {
+    model <- try_sparse
+  }
+
+  print(summary(model))
+  return(model)
+}
+
+small_models <- list()
+
+for (name in names(datasets)) {
+  dat <- datasets[[name]]
+  level <- ifelse(grepl("genus", name), "genus", "family")
+  no_art <- grepl("no_art", name)
+  
+  # RHO effect size
+  small_models[[paste0("small_z_", name)]] <- run_small_study_bias_test(dat, effect_size_col = "z", variance_col = "v", level = level, no_art = no_art)
+  
+  # BETA effect size
+  small_models[[paste0("small_slope_", name)]] <- run_small_study_bias_test(dat, effect_size_col = "slope", variance_col = "ste", level = level, no_art = no_art)
+}
+
+small_model_table <- extract_model_summary(small_models)
+
+
+```
+
+1.2 Sensitivity analysis (leave-one-out)
+a. (leave one out for rho, biome level)
+```{r}
+# leave one out analysis
+leave1out_ES <- list() # create a list to contain model estimates
+est.func <- function(mod){
+  df <- data.frame(est = mod$b, lower = mod$ci.lb, upper = mod$ci.ub)
+  return(df)
+}
+family.0001_complete_slim <- family.0001_complete[-which(family.0001_complete$distinct_families<10),]
+for(i in 1:length(family.0001_complete_slim$ID)){
+  # create the data with one study removed at a time
+  dat <- family.0001_complete_slim[-i,] # repeatedly run the multilevel model, leaving out one study at a time
+  
+  leave_mod <- rma.mv(yi = z, 
+                               V = v, 
+                               random = list(~1 | study_ID, # allows true effect sizes to vary among different primary studies - account for the between-study effect and quantify between-study heterogeneity;
+                                             ~1 | subject_id,
+                                             ~1 | biome_ID), 
+                               method = "REML", 
+                               test = "t",
+                               data = dat,
+                               sparse = TRUE) # model fitting
+  leave1out_ES[[i]] <- est.func(leave_mod)}
+
+
+names(leave1out_ES) <- family.0001_complete_slim$ID
+leave1out_df <- do.call(rbind, lapply(leave1out_ES, function(df){
+  row <- data.frame("est" = df[1], "lower" = df[2], "upper" = df[3])
+  return(row)
+}))
+
+leave1out_df$Study <- rownames(leave1out_df)
+leave1out_df$Study <- factor(leave1out_df$Study, levels = rev(rownames(leave1out_df)))
+
+write.csv(leave1out_df, "leave_one_out.csv")
+
+
+# Create the plot
+ggplot(leave1out_df, aes(x = est, y = Study)) +
+  geom_point() +
+  geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0.3) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  xlab("Z (95% CI)") +
+  ylab("Participant/biome left out") +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 7),
+    axis.text.x = element_text(size = 10),
+    axis.title = element_text(size = 12)
+  )
+##SAVE AS 50/5
+#The outlier is M1278_A_oral, but it isn't that much of an outlier (still within 95% confidence intervals)
+#it appears the reason it is an outlier is not because it has a particularly high effect size
+#but instead because it strongly affects the mean of its participant as well as it's study
+#it's participant has 2 biomes sampled, and biome seems to have a profound effect here
+#in the gut, the trade off is nonexistant but in the skin it is clearly present.
+
+#doing study level now
+leave1out_ST <- list()
+for(i in 1:length(unique(family.0001_complete_slim$study_ID))){
+  # create the data with one study removed at a time
+  study_ids <- unique(family.0001_complete_slim$study_ID)
+  dat <- family.0001_complete_slim[-which(family.0001_complete_slim$study_ID == study_ids[i]),] # repeatedly run the multilevel model, leaving out one study at a time
+  print(study_ids[i])
+  leave_mod <- rma.mv(yi = z, 
+                      V = v, 
+                      random = list(~1 | study_ID, # allows true effect sizes to vary among different primary studies - account for the between-study effect and quantify between-study heterogeneity;
+                                    ~1 | subject_id,
+                                    ~1 | biome_ID), 
+                      method = "REML", 
+                      test = "t",
+                      data = dat,
+                      sparse = TRUE) # model fitting
+  print("fitted")
+  leave1out_ST[[i]] <- est.func(leave_mod)}
+
+names(leave1out_ST) <- unique(family.0001_complete_slim$study_ID)
+leave1out_STdf <- do.call(rbind, lapply(leave1out_ST, function(df){
+  row <- data.frame("est" = df[1], "lower" = df[2], "upper" = df[3])
+  return(row)
+}))
+
+leave1out_STdf$Study <- rownames(leave1out_STdf)
+write.csv(leave1out_STdf, "leave_one_study_out.csv")
+
+
+#####################################NO ARTIFACTS
+leave1out_ES_no_art <- list() # create a list to contain model estimates
+family_no_art_complete_slim <- family_no_art_complete[-which(family_no_art_complete$distinct_families<10),]
+for(i in 1:length(family_no_art_complete_slim$ID)){
+  # create the data with one study removed at a time
+  dat <- family_no_art_complete_slim[-i,] # repeatedly run the multilevel model, leaving out one study at a time
+  print(family_no_art_complete_slim$ID[i])
+  leave_mod <- rma.mv(yi = z, 
+                               V = v, 
+                               random = list(~1 | study_ID, # allows true effect sizes to vary among different primary studies - account for the between-study effect and quantify between-study heterogeneity;
+                                             ~1 | subject_id,
+                                             ~1 | biome_ID), 
+                               method = "REML", 
+                               test = "t",
+                               data = dat,
+                               sparse = TRUE) # model fitting
+  leave1out_ES_no_art[[i]] <- est.func(leave_mod)}
+
+names(leave1out_ES_no_art) <- family_no_art_complete_slim$ID
+leave1out_df_no_art <- do.call(rbind, lapply(leave1out_ES_no_art, function(df){
+  row <- data.frame("est" = df[1], "lower" = df[2], "upper" = df[3])
+  return(row)
+}))
+
+leave1out_df_no_art$Study <- rownames(leave1out_df_no_art)
+leave1out_df_no_art$Study <- factor(leave1out_df_no_art$Study, levels = rev(rownames(leave1out_df_no_art)))
+
+write.csv(leave1out_df_no_art, "leave_one_out_no_art.csv")
+
+
+# Create the plot
+ggplot(leave1out_df_no_art, aes(x = est, y = Study)) +
+  geom_point() +
+  geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0.3) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  xlab("Z (95% CI)") +
+  ylab("Participant/biome left out") +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 7),
+    axis.text.x = element_text(size = 10),
+    axis.title = element_text(size = 12)
+  )
+
+#doing study level now
+leave1out_ST_no_art <- list()
+for(i in 1:length(unique(family_no_art_complete_slim$study_ID))){
+  # create the data with one study removed at a time
+  study_ids <- unique(family_no_art_complete_slim$study_ID)
+  dat <- family_no_art_complete_slim[-which(family_no_art_complete_slim$study_ID == study_ids[i]),] # repeatedly run the multilevel model, leaving out one study at a time
+  print(study_ids[i])
+  leave_mod <- rma.mv(yi = z, 
+                      V = v, 
+                      random = list(~1 | study_ID, # allows true effect sizes to vary among different primary studies - account for the between-study effect and quantify between-study heterogeneity;
+                                    ~1 | subject_id,
+                                    ~1 | biome_ID), 
+                      method = "REML", 
+                      test = "t",
+                      data = dat,
+                      sparse = TRUE) # model fitting
+  print("fitted")
+  leave1out_ST_no_art[[i]] <- est.func(leave_mod)}
+
+names(leave1out_ST_no_art) <- unique(family_no_art_complete_slim$study_ID)
+leave1out_STdf_no_art <- do.call(rbind, lapply(leave1out_ST_no_art, function(df){
+  row <- data.frame("est" = df[1], "lower" = df[2], "upper" = df[3])
+  return(row)
+}))
+
+leave1out_STdf_no_art$Study <- rownames(leave1out_STdf_no_art)
+write.csv(leave1out_STdf_no_art, "leave_one_study_out_no_art.csv")
+
+
+
+###################################################################
+###################################################################
+#Doing individual leave-one-out for the ones I haven't done yet (family with slopes, all genus-level)
+
+
+leave1out_ES_no_art_gen <- list() # create a list to contain model estimates
+genus_no_art_complete_slim <- genus_no_art_complete[-which(genus_no_art_complete$distinct_genera<10),]
+for(i in 1:length(genus_no_art_complete_slim$ID)){
+  # create the data with one study removed at a time
+  dat <- genus_no_art_complete_slim[-i,] # repeatedly run the multilevel model, leaving out one study at a time
+  print(genus_no_art_complete_slim$ID[i])
+  leave_mod <- rma.mv(yi = z, 
+                               V = v, 
+                               random = list(~1 | study_ID, # allows true effect sizes to vary among different primary studies - account for the between-study effect and quantify between-study heterogeneity;
+                                             ~1 | subject_id,
+                                             ~1 | biome_ID), 
+                               method = "REML", 
+                               test = "t",
+                               data = dat,
+                               sparse = TRUE) # model fitting
+  leave1out_ES_no_art_gen[[i]] <- est.func(leave_mod)}
+
+names(leave1out_ES_no_art_gen) <- genus_no_art_complete_slim$ID
+leave1out_df_no_art_gen <- do.call(rbind, lapply(leave1out_ES_no_art_gen, function(df){
+  row <- data.frame("est" = df[1], "lower" = df[2], "upper" = df[3])
+  return(row)
+}))
+
+leave1out_df_no_art_gen$Study <- rownames(leave1out_df_no_art_gen)
+leave1out_df_no_art_gen$Study <- factor(leave1out_df_no_art_gen$Study, levels = rev(rownames(leave1out_df_no_art_gen)))
+
+write.csv(leave1out_df_no_art_gen, "leave_one_out_no_art_gen.csv")
+
+###Genus with artifacts (rho)
+leave1out_ES.0001_gen <- list() # create a list to contain model estimates
+genus.0001_complete_slim <- genus.0001_complete[-which(genus.0001_complete$distinct_genera<10),]
+for(i in 1:length(genus.0001_complete_slim$ID)){
+  # create the data with one study removed at a time
+  dat <- genus.0001_complete_slim[-i,] # repeatedly run the multilevel model, leaving out one study at a time
+  print(genus.0001_complete_slim$ID[i])
+  leave_mod <- rma.mv(yi = z, 
+                               V = v, 
+                               random = list(~1 | study_ID, # allows true effect sizes to vary among different primary studies - account for the between-study effect and quantify between-study heterogeneity;
+                                             ~1 | subject_id,
+                                             ~1 | biome_ID), 
+                               method = "REML", 
+                               test = "t",
+                               data = dat,
+                               sparse = TRUE) # model fitting
+  leave1out_ES.0001_gen[[i]] <- est.func(leave_mod)}
+
+names(leave1out_ES.0001_gen) <- genus.0001_complete_slim$ID
+leave1out_df.0001_gen <- do.call(rbind, lapply(leave1out_ES.0001_gen, function(df){
+  row <- data.frame("est" = df[1], "lower" = df[2], "upper" = df[3])
+  return(row)
+}))
+
+leave1out_df.0001_gen$Study <- rownames(leave1out_df.0001_gen)
+leave1out_df.0001_gen$Study <- factor(leave1out_df.0001_gen$Study, levels = rev(rownames(leave1out_df.0001_gen)))
+
+write.csv(leave1out_df.0001_gen, "leave_one_out.0001_gen.csv")
+
+##################################################################################################################################################################################
+
+
+
+```
+
+
+1.2.b. leave one out by slope
+
+
+
+```{r}
+###family level with artifacts
+leave1out_slope_ES <- list()
+for(i in 1:length(family.0001_complete_slim$ID)){
+  # create the data with one study removed at a time
+  dat <- family.0001_complete_slim[-i,] # repeatedly run the multilevel model, leaving out one study at a time
+  print(family.0001_complete_slim$ID[i])
+  leave_mod <- rma.mv(yi = slope, 
+                               V = ste, 
+                               random = list(~1 | study_ID, # allows true effect sizes to vary among different primary studies - account for the between-study effect and quantify between-study heterogeneity;
+                                             ~1 | subject_id,
+                                             ~1 | biome_ID), 
+                               method = "REML", 
+                               test = "t",
+                               data = dat,
+                               sparse = TRUE) # model fitting
+  leave1out_slope_ES[[i]] <- est.func(leave_mod)}
+
+
+names(leave1out_slope_ES) <- family.0001_complete_slim$ID
+leave1out_slope_df <- do.call(rbind, lapply(leave1out_slope_ES, function(df){
+  row <- data.frame("est" = df[1], "lower" = df[2], "upper" = df[3])
+  return(row)
+}))
+
+leave1out_slope_df$Study <- rownames(leave1out_slope_df)
+leave1out_slope_df$Study <- factor(leave1out_slope_df$Study, levels = rev(rownames(leave1out_slope_df)))
+
+write.csv(leave1out_slope_df, "leave_one_out_slope.csv")
+
+####Family level no artifacts
+leave1out_ES_slope_no_art <- list()
+
+for (i in seq_along(family_no_art_complete_slim$ID)) {
+  # Leave one study out
+  dat <- family_no_art_complete_slim[-i, ]
+  study_out <- family_no_art_complete_slim$ID[i]
+  print(study_out)
+
+  # Try sparse = TRUE first
+  leave_mod <- tryCatch({
+    rma.mv(
+      yi = slope, 
+      V = ste, 
+      random = list(~1 | study_ID, ~1 | subject_id, ~1 | biome_ID), 
+      method = "REML", 
+      test = "t", 
+      data = dat,
+      sparse = TRUE
+    )
+  }, error = function(e) {
+    message(paste("Sparse model failed for", study_out, "- trying sparse = FALSE"))
+    # Try again without sparse
+    tryCatch({
+      rma.mv(
+        yi = slope, 
+        V = ste, 
+        random = list(~1 | study_ID, ~1 | subject_id, ~1 | biome_ID), 
+        method = "REML", 
+        test = "t", 
+        data = dat,
+        sparse = FALSE
+      )
+    }, error = function(e2) {
+      message(paste("Model failed completely for", study_out))
+      return(NULL)
+    })
+  })
+
+  leave1out_ES_slope_no_art[[i]] <- if (!is.null(leave_mod)) est.func(leave_mod) else NA
+}
+
+names(leave1out_ES_slope_no_art) <- family_no_art_complete_slim$ID
+leave1out_df_slope_no_art <- do.call(rbind, lapply(leave1out_ES_slope_no_art, function(df){
+  row <- data.frame("est" = df[1], "lower" = df[2], "upper" = df[3])
+  return(row)
+}))
+
+leave1out_df_slope_no_art$Study <- rownames(leave1out_df_slope_no_art)
+leave1out_df_slope_no_art$Study <- factor(leave1out_df_slope_no_art$Study, levels = rev(rownames(leave1out_df_slope_no_art)))
+
+write.csv(leave1out_df_slope_no_art, "leave_one_out_slope_no_art.csv")
+
+###########################Genus with artifacts
+leave1out_ES.0001_slope_gen <- list() # create a list to contain model estimates
+for(i in 1:length(genus.0001_complete_slim$ID)){
+  # create the data with one study removed at a time
+  dat <- genus.0001_complete_slim[-i,] # repeatedly run the multilevel model, leaving out one study at a time
+  print(genus.0001_complete_slim$ID[i])
+  leave_mod <- rma.mv(yi = slope, 
+                               V = ste, 
+                               random = list(~1 | study_ID, # allows true effect sizes to vary among different primary studies - account for the between-study effect and quantify between-study heterogeneity;
+                                             ~1 | subject_id,
+                                             ~1 | biome_ID), 
+                               method = "REML", 
+                               test = "t",
+                               data = dat,
+                               sparse = TRUE) # model fitting
+  leave1out_ES.0001_slope_gen[[i]] <- est.func(leave_mod)}
+
+names(leave1out_ES.0001_slope_gen) <- genus.0001_complete_slim$ID
+leave1out_df.0001_slope_gen <- do.call(rbind, lapply(leave1out_ES.0001_slope_gen, function(df){
+  row <- data.frame("est" = df[1], "lower" = df[2], "upper" = df[3])
+  return(row)
+}))
+
+leave1out_df.0001_slope_gen$Study <- rownames(leave1out_df.0001_slope_gen)
+leave1out_df.0001_slope_gen$Study <- factor(leave1out_df.0001_slope_gen$Study, levels = rev(rownames(leave1out_df.0001_slope_gen)))
+
+write.csv(leave1out_df.0001_slope_gen, "leave_one_out.0001_slope_gen.csv")
+
+#####################################################################
+####Genus no artifacts
+leave1out_ES_slope_no_art_gen <- list()
+
+for (i in seq_along(genus_no_art_complete_slim$ID)) {
+  # Leave one study out
+  dat <- genus_no_art_complete_slim[-i, ]
+  study_out <- genus_no_art_complete_slim$ID[i]
+  print(study_out)
+
+  # Try sparse = TRUE first
+  leave_mod <- tryCatch({
+    rma.mv(
+      yi = slope, 
+      V = ste, 
+      random = list(~1 | study_ID, ~1 | subject_id, ~1 | biome_ID), 
+      method = "REML", 
+      test = "t", 
+      data = dat,
+      sparse = TRUE
+    )
+  }, error = function(e) {
+    message(paste("Sparse model failed for", study_out, "- trying sparse = FALSE"))
+    # Try again without sparse
+    tryCatch({
+      rma.mv(
+        yi = slope, 
+        V = ste, 
+        random = list(~1 | study_ID, ~1 | subject_id, ~1 | biome_ID), 
+        method = "REML", 
+        test = "t", 
+        data = dat,
+        sparse = FALSE
+      )
+    }, error = function(e2) {
+      message(paste("Model failed completely for", study_out))
+      return(NULL)
+    })
+  })
+
+  leave1out_ES_slope_no_art_gen[[i]] <- if (!is.null(leave_mod)) est.func(leave_mod) else NA
+}
+
+names(leave1out_ES_slope_no_art_gen) <- genus_no_art_complete_slim$ID
+leave1out_df_slope_no_art_gen <- do.call(rbind, lapply(leave1out_ES_slope_no_art_gen, function(df){
+  row <- data.frame("est" = df[1], "lower" = df[2], "upper" = df[3])
+  return(row)
+}))
+
+leave1out_df_slope_no_art_gen$Study <- rownames(leave1out_df_slope_no_art_gen)
+leave1out_df_slope_no_art_gen$Study <- factor(leave1out_df_slope_no_art_gen$Study, levels = rev(rownames(leave1out_df_slope_no_art_gen)))
+
+write.csv(leave1out_df_slope_no_art_gen, "leave_one_out_slope_no_art_gen.csv")
+
+######################################################################
+#########################ALLL STUDY LEVEL SENSITIVITY ANALYSIS########
+######################################################################
+
+run_leave_one_out_analysis <- function(data, level = "family",
+                                       effect_size_col = "z",
+                                       variance_col = "v",
+                                       est.func,
+                                       sparse = TRUE) {
+  # Filter by minimum taxa
+  min_taxa_col <- ifelse(level == "family", "distinct_families", "distinct_genera")
+  data_slim <- data[data[[min_taxa_col]] > 9, ]
+
+  study_ids <- unique(data_slim$study_ID)
+  leave1out_results <- vector("list", length(study_ids))
+  names(leave1out_results) <- study_ids
+
+  for (i in seq_along(study_ids)) {
+    sid <- study_ids[i]
+    cat("Leaving out study:", sid, "\n")
+
+    dat <- data_slim[data_slim$study_ID != sid, ]
+
+    leave_mod <- tryCatch({
+      rma.mv(yi = dat[[effect_size_col]],
+             V = dat[[variance_col]],
+             random = list(~1 | study_ID,
+                           ~1 | subject_id,
+                           ~1 | biome_ID),
+             method = "REML",
+             test = "t",
+             data = dat,
+             sparse = sparse)
+    }, error = function(e) {
+      warning(sprintf("Model failed for study: %s", sid))
+      return(NULL)
+    })
+
+    if (!is.null(leave_mod)) {
+      leave1out_results[[i]] <- est.func(leave_mod)
+    } else {
+      leave1out_results[[i]] <- c(NA, NA, NA)
+    }
+  }
+
+  leave1out_df <- do.call(rbind, lapply(leave1out_results, function(res) {
+    data.frame(est = res[1], lower = res[2], upper = res[3])
+  }))
+  leave1out_df$Study <- names(leave1out_results)
+  rownames(leave1out_df) <- NULL
+
+  return(leave1out_df)
+}
+
+leave1out_all_studies <- list()
+
+for (name in names(datasets)) {
+  dat <- datasets[[name]]
+  level <- ifelse(grepl("genus", name), "genus", "family")
+
+  # Rho (z)
+  res_z <- run_leave_one_out_analysis(
+    data = dat,
+    level = level,
+    effect_size_col = "z",
+    variance_col = "v",
+    est.func = est.func
+  )
+  res_z$model <- name
+  res_z$effect_type <- "rho"
+
+  # Slope (beta)
+  res_slope <- run_leave_one_out_analysis(
+    data = dat,
+    level = level,
+    effect_size_col = "slope",
+    variance_col = "ste",
+    est.func = est.func
+  )
+  res_slope$model <- name
+  res_slope$effect_type <- "slope"
+
+  # Store both
+  leave1out_all_studies[[paste0(name, "_z")]] <- res_z
+  leave1out_all_studies[[paste0(name, "_slope")]] <- res_slope
+}
+
+leave1out_all_studies
+
+```
+
+1.3 figures for sensitivity analysis
+```{r}
+leave_one_out.0001_fam_rho <- read.csv("leave_one_out.csv")
+leave_one_out.0001_gen_rho <- read.csv("leave_one_out.0001_gen.csv")
+leave_one_out_no_art_fam_rho <- read.csv("leave_one_out_no_art.csv")
+leave_one_out_no_art_gen_rho <- read.csv("leave_one_out_no_art_gen.csv")
+leave_one_out.0001_fam_slope <- read.csv("leave_one_out_slope.csv")
+leave_one_out.0001_gen_slope <- read.csv("leave_one_out.0001_slope_gen.csv")
+leave_one_out_no_art_fam_slope <- read.csv("leave_one_out_slope_no_art.csv")
+leave_one_out_no_art_gen_slope <- read.csv("leave_one_out_slope_no_art_gen.csv")
+
+plot_list <- list(
+  leave1 = ggplot(leave_one_out.0001_fam_rho, aes(x = est, y = Study)) + 
+    geom_point() + geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0.3) +
+    geom_vline(xintercept = 0, linetype = "dashed") +
+    xlab("Z (95% CI)") + ylab("Participant/biome left out") + ggtitle("Leave one out - Family") +
+    theme_minimal() + theme(axis.text.y = element_text(size = 7), axis.text.x = element_text(size = 10), axis.title = element_text(size = 12)),
+
+  leave2 = ggplot(leave_one_out_no_art_fam_rho, aes(x = est, y = Study)) +
+    geom_point() + geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0.3) +
+    geom_vline(xintercept = 0, linetype = "dashed") +
+    xlab("Z (95% CI)") + ylab("Participant/biome left out") + ggtitle("Leave one out - Family (no artifacts)") +
+    theme_minimal() + theme(axis.text.y = element_text(size = 7), axis.text.x = element_text(size = 10), axis.title = element_text(size = 12)),
+
+  leave3 = ggplot(leave_one_out.0001_gen_rho, aes(x = est, y = Study)) +
+    geom_point() + geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0.3) +
+    geom_vline(xintercept = 0, linetype = "dashed") +
+    xlab("Z (95% CI)") + ylab("Participant/biome left out") + ggtitle("Leave one out - Genus") +
+    theme_minimal() + theme(axis.text.y = element_text(size = 7), axis.text.x = element_text(size = 10), axis.title = element_text(size = 12)),
+
+  leave4 = ggplot(leave_one_out_no_art_gen_rho, aes(x = est, y = Study)) +
+    geom_point() + geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0.3) +
+    geom_vline(xintercept = 0, linetype = "dashed") +
+    xlab("Z (95% CI)") + ylab("Participant/biome left out") + ggtitle("Leave one out - Genus (no artifacts)") +
+    theme_minimal() + theme(axis.text.y = element_text(size = 7), axis.text.x = element_text(size = 10), axis.title = element_text(size = 12)),
+
+  leave5 = ggplot(leave_one_out.0001_fam_slope, aes(x = est, y = Study)) +
+    geom_point() + geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0.3) +
+    geom_vline(xintercept = 0, linetype = "dashed") +
+    xlab("Beta (95% CI)") + ylab("Participant/biome left out") + ggtitle("Leave one out - Family") +
+    theme_minimal() + theme(axis.text.y = element_text(size = 7), axis.text.x = element_text(size = 10), axis.title = element_text(size = 12)),
+
+  leave6 = ggplot(leave_one_out_no_art_fam_slope, aes(x = est, y = Study)) +
+    geom_point() + geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0.3) +
+    geom_vline(xintercept = 0, linetype = "dashed") +
+    xlab("Beta (95% CI)") + ylab("Participant/biome left out") + ggtitle("Leave one out - Family (no artifacts)") +
+    theme_minimal() + theme(axis.text.y = element_text(size = 7), axis.text.x = element_text(size = 10), axis.title = element_text(size = 12)),
+
+  leave7 = ggplot(leave_one_out.0001_gen_slope, aes(x = est, y = Study)) +
+    geom_point() + geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0.3) +
+    geom_vline(xintercept = 0, linetype = "dashed") +
+    xlab("Beta (95% CI)") + ylab("Participant/biome left out") + ggtitle("Leave one out - Genus") +
+    theme_minimal() + theme(axis.text.y = element_text(size = 7), axis.text.x = element_text(size = 10), axis.title = element_text(size = 12)),
+
+  leave8 = ggplot(leave_one_out_no_art_gen_slope, aes(x = est, y = Study)) +
+    geom_point() + geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0.3) +
+    geom_vline(xintercept = 0, linetype = "dashed") +
+    xlab("Beta (95% CI)") + ylab("Participant/biome left out") + ggtitle("Leave one out - Genus (no artifacts)") +
+    theme_minimal() + theme(axis.text.y = element_text(size = 7), axis.text.x = element_text(size = 10), axis.title = element_text(size = 12)),
+
+  # All studies
+  leave9 = ggplot(leave1out_all_studies$family.0001_z, aes(x = est, y = Study)) + 
+    geom_point() + geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0.3) +
+    geom_vline(xintercept = 0, linetype = "dashed") + xlab("Z (95% CI)") + ylab("Study left out") +
+    ggtitle("Leave one study out - Family") + theme_minimal() + 
+    theme(axis.text.y = element_text(size = 7), axis.text.x = element_text(size = 10), axis.title = element_text(size = 12)),
+
+  leave10 = ggplot(leave1out_all_studies$family.no_art_z, aes(x = est, y = Study)) +
+    geom_point() + geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0.3) +
+    geom_vline(xintercept = 0, linetype = "dashed") + xlab("Z (95% CI)") + ylab("Study left out") +
+    ggtitle("Leave one study out - Family (no artifacts)") + theme_minimal() +
+    theme(axis.text.y = element_text(size = 7), axis.text.x = element_text(size = 10), axis.title = element_text(size = 12)),
+
+  leave11 = ggplot(leave1out_all_studies$genus.0001_z, aes(x = est, y = Study)) +
+    geom_point() + geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0.3) +
+    geom_vline(xintercept = 0, linetype = "dashed") + xlab("Z (95% CI)") + ylab("Study left out") +
+    ggtitle("Leave one study out - Genus") + theme_minimal() +
+    theme(axis.text.y = element_text(size = 7), axis.text.x = element_text(size = 10), axis.title = element_text(size = 12)),
+
+  leave12 = ggplot(leave1out_all_studies$genus.no_art_z, aes(x = est, y = Study)) +
+    geom_point() + geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0.3) +
+    geom_vline(xintercept = 0, linetype = "dashed") + xlab("Z (95% CI)") + ylab("Study left out") +
+    ggtitle("Leave one study out - Genus (no artifacts)") + theme_minimal() +
+    theme(axis.text.y = element_text(size = 7), axis.text.x = element_text(size = 10), axis.title = element_text(size = 12)),
+
+  leave13 = ggplot(leave1out_all_studies$family.0001_slope, aes(x = est, y = Study)) +
+    geom_point() + geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0.3) +
+    geom_vline(xintercept = 0, linetype = "dashed") + xlab("Beta (95% CI)") + ylab("Study left out") +
+    ggtitle("Leave one study out - Family") + theme_minimal() +
+    theme(axis.text.y = element_text(size = 7), axis.text.x = element_text(size = 10), axis.title = element_text(size = 12)),
+
+  leave14 = ggplot(leave1out_all_studies$family.no_art_slope, aes(x = est, y = Study)) +
+    geom_point() + geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0.3) +
+    geom_vline(xintercept = 0, linetype = "dashed") + xlab("Beta (95% CI)") + ylab("Study left out") +
+    ggtitle("Leave one study out - Family (no artifacts)") + theme_minimal() +
+    theme(axis.text.y = element_text(size = 7), axis.text.x = element_text(size = 10), axis.title = element_text(size = 12)),
+
+  leave15 = ggplot(leave1out_all_studies$genus.0001_slope, aes(x = est, y = Study)) +
+    geom_point() + geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0.3) +
+    geom_vline(xintercept = 0, linetype = "dashed") + xlab("Beta (95% CI)") + ylab("Study left out") +
+    ggtitle("Leave one study out - Genus") + theme_minimal() +
+    theme(axis.text.y = element_text(size = 7), axis.text.x = element_text(size = 10), axis.title = element_text(size = 12)),
+
+  leave16 = ggplot(leave1out_all_studies$genus.no_art_slope, aes(x = est, y = Study)) +
+    geom_point() + geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0.3) +
+    geom_vline(xintercept = 0, linetype = "dashed") + xlab("Beta (95% CI)") + ylab("Study left out") +
+    ggtitle("Leave one study out - Genus (no artifacts)") + theme_minimal() +
+    theme(axis.text.y = element_text(size = 7), axis.text.x = element_text(size = 10), axis.title = element_text(size = 12))
+)
+
+# Define file names
+file_names <- paste0("Studies_scripts/figures/leaveout_plot_", seq_along(plot_list), ".pdf")
+
+# Save all plots
+for (i in seq_along(plot_list)) {
+  dims <- if (i <= 8) c(5, 50) else c(5, 4)
+  ggsave(file_names[i], plot = plot_list[[i]], width = dims[1], height = dims[2], units = "in", limitsize = FALSE)
+}
+
+```
+
+
+2. get "global means", make forest plots (slope and rho)
+```{r}
+run_meta_model <- function(data, level = "family", effect_size_col = "z", variance_col = "v") {
+  # Filter based on minimum taxa
+  min_taxa_col <- ifelse(level == "family", "distinct_families", "distinct_genera")
+  data_filtered <- data[data[[min_taxa_col]] > 9, ]
+
+  # Fit multilevel model
+  model <- rma.mv(
+    yi = data_filtered[[effect_size_col]],
+    V = data_filtered[[variance_col]],
+    random = list(
+      ~1 | study_ID,
+      ~1 | subject_id,
+      ~1 | biome_ID
+    ),
+    method = "REML",
+    data = data_filtered,
+    sparse = TRUE
+  )
+
+  return(model)
+}
+
+meta_models <- list()
+
+for (name in names(datasets)) {
+  dat <- datasets[[name]]
+  level <- ifelse(grepl("genus", name), "genus", "family")
+
+  # Rho model
+  model_rho <- run_meta_model(dat, level = level, effect_size_col = "z", variance_col = "v")
+  model_name_rho <- paste0("mod_rho_", name)
+  meta_models[[model_name_rho]] <- model_rho
+
+  # Slope model
+  model_slope <- run_meta_model(dat, level = level, effect_size_col = "slope", variance_col = "ste")
+  model_name_slope <- paste0("mod_slope_", name)
+  meta_models[[model_name_slope]] <- model_slope
+}
+
+meta_model_summary <- extract_model_summary(meta_models)
+write.csv(meta_model_summary, "meta_means.csv")
+
+for (name in names(meta_models)) {
+  pdf(paste0("Studies_scripts/figures/forest_", name, ".pdf"), width = 7, height = 5)
+  forest(meta_models[[name]], xlab = ifelse(grepl("rho", name), "Effect size Z", "Effect size Beta"))
+  dev.off()
+}
+
+```
+
+
+3. Regress by biome, make orchard plots
+```{r}
+run_meta_model_biome <- function(data, level = "family", effect_size_col = "z", variance_col = "v") {
+  # Filter based on distinct taxa
+  min_taxa_col <- ifelse(level == "family", "distinct_families", "distinct_genera")
+  data_filtered <- data[data[[min_taxa_col]] > 9, ]
+
+  # Fit model with biome moderator (no intercept)
+  model <- rma.mv(
+    yi = data_filtered[[effect_size_col]],
+    V = data_filtered[[variance_col]],
+    mods = ~ true_biome - 1,
+    random = list(
+      ~1 | study_ID,
+      ~1 | subject_id,
+      ~1 | biome_ID
+    ),
+    method = "REML",
+    test = "t",
+    data = data_filtered,
+    sparse = TRUE
+  )
+
+  return(model)
+}
+
+biome_models <- list()
+
+for (name in names(datasets)) {
+  dat <- datasets[[name]]
+  level <- ifelse(grepl("genus", name), "genus", "family")
+
+  # Rho (z)
+  model_rho <- run_meta_model_biome(dat, level = level, effect_size_col = "z", variance_col = "v")
+  biome_models[[paste0("biome_rho_", name)]] <- model_rho
+
+  # Slope (beta)
+  model_slope <- run_meta_model_biome(dat, level = level, effect_size_col = "slope", variance_col = "ste")
+  biome_models[[paste0("biome_slope_", name)]] <- model_slope
+}
+
+
+biome_summary_table <- extract_model_summary(biome_models)
+
+
+orchard_plot(biome_models$biome_rho_family.0001, 
+             mod = "true_biome", 
+             xlab = "Effect size Z",
+             group = "study_ID",  k = TRUE, g = FALSE, trunk.size = 1.5,) + 
+  scale_x_discrete(labels = c("gut","oral","respiratory","skin","vaginal"))
+
+# Define custom biome labels
+biome_labels <- c("gut", "oral", "resp.", "skin", "vaginal")
+
+# Optional: clean labels for filenames
+clean_filename <- function(name) {
+  gsub("[^a-zA-Z0-9]", "_", name)
+}
+
+biome_models <- biome_models[c(3,4,7,8)]
+
+# Loop over each model and save orchard plots
+for (name in names(biome_models)) {
+  model <- biome_models[[name]]
+
+  # Set x-axis label based on effect type
+  xlab_text <- if (grepl("rho", name)) {
+    "Effect size Z"
+  } else {
+    "Effect size Beta"
+  }
+
+  # Build the plot
+  p <- orchard_plot(model,
+                    mod = "true_biome",
+                    group = "study_ID",
+                    xlab = xlab_text,
+                    k = TRUE, g = FALSE,
+                    trunk.size = 1.5) +
+       scale_x_discrete(labels = biome_labels) +
+       ggtitle(paste("Orchard plot:", name)) +
+       theme_minimal()
+
+  # Save to PDF
+  ggsave(
+    filename = paste0("Studies_scripts/figures/orchard_", clean_filename(name), ".pdf"),
+    plot = p,
+    width = 7, height = 5, units = "in"
+  )
+}
+
+plot_list_biomes <- lapply(names(biome_models), function(name) {
+  model <- biome_models[[name]]
+  
+  # Determine effect type and level
+  effect <- if (str_detect(name, "slope")) "Beta" else "Z"
+  level <- if (str_detect(name, "genus")) "Genus" else "Family"
+  artifact <- if (str_detect(name, "no_art")) "No Artifacts" else "With Artifacts"
+  
+  # Create label
+  plot_title <- paste(level, "-", effect, "-", artifact)
+  
+  # Make orchard plot
+  p <- orchard_plot(
+  model,
+  mod = "true_biome",
+  xlab = paste("Effect size", effect),
+  group = "study_ID",
+  k = TRUE,
+  g = FALSE,
+  trunk.size = 1.5
+) +
+  scale_x_discrete(labels = biome_labels)
+  
+  return(p)
+})
+
+# Combine with patchwork
+library(patchwork)
+combined_plot_biome <- wrap_plots(plotlist = plot_list_biomes, ncol = 2)
+combined_plot_biome
+
+
+```
+
+
+4. Regress by beta diversity (richness BDtotal, BDprop, turnover)
+```{r}
+############################AUTOMATED
+run_meta_model_diversity <- function(data, moderator, level = "family", effect_size_col = "z", variance_col = "v") {
+  # Filter for sufficient taxa
+  min_taxa_col <- ifelse(level == "family", "distinct_families", "distinct_genera")
+  data_filtered <- data[data[[min_taxa_col]] > 9, ]
+
+  # Fit model with given moderator
+  formula_mod <- as.formula(paste("~", moderator))
+  model <- rma.mv(
+    yi = data_filtered[[effect_size_col]],
+    V = data_filtered[[variance_col]],
+    mods = formula_mod,
+    random = list(~1 | study_ID, ~1 | subject_id, ~1 | biome_ID),
+    method = "REML",
+    test = "t",
+    data = data_filtered,
+    sparse = TRUE
+  )
+  return(model)
+}
+
+# List of moderators and datasets
+moderators <- list(
+  richness_log = "log(richness)",
+  BDtotal = "BDtotal",
+  rate_change = "rate_change",
+  average_turnover = "turnover"
+)
+
+diversity_models <- list()
+
+for (name in names(datasets)) {
+  dat <- datasets[[name]]
+  level <- ifelse(grepl("genus", name), "genus", "family")
+
+  # Filter for distinct taxa > 9
+  min_taxa_col <- ifelse(level == "family", "distinct_families", "distinct_genera")
+  dat <- dat[dat[[min_taxa_col]] > 9, ]
+
+  # Add log-transformed diversity measures
+  dat$richness_log <- log(dat$richness)
+  dat$BDtotal_log <- log(dat$BDtotal)
+  dat$turnover_log <- log(dat$average_turnover)
+
+  for (mod_name in names(moderators)) {
+    # Rho (z)
+    model_z <- run_meta_model_diversity(dat, moderator = mod_name, level = level, effect_size_col = "z", variance_col = "v")
+    diversity_models[[paste0("diversity_", mod_name, "_z_", name)]] <- model_z
+
+    # Slope (beta)
+    model_slope <- run_meta_model_diversity(dat, moderator = mod_name, level = level, effect_size_col = "slope", variance_col = "ste")
+    diversity_models[[paste0("diversity_", mod_name, "_slope_", name)]] <- model_slope
+  }
+}
+
+# Save summaries if needed
+diversity_summary <- extract_model_summary(diversity_models)
+
+#Plotting
+# Plotting loop for bubble plots
+for (model_name in names(diversity_models)) {
+  model <- diversity_models[[model_name]]
+
+  mod_cols <- setdiff(colnames(model$X), "(Intercept)")
+  if (length(mod_cols) == 0) {
+    warning(paste("Skipping", model_name, "- no valid moderator found."))
+    next
+  }
+  mod_term <- mod_cols[1]
+  if (mod_term == "intrcpt" && ncol(model$X) > 1) mod_term <- colnames(model$X)[2]
+
+  xlab_text <- case_when(
+    grepl("richness_log", model_name) ~ "Richness (log)",
+    grepl("BDtotal", model_name) ~ "Total community variance",
+    grepl("rate_change", model_name) ~ "Time lag slope",
+    grepl("turnover_log", model_name) ~ "Turnover (log)",
+    TRUE ~ mod_term
+  )
+
+  p <- bubble_plot(model,
+                   mod = mod_term,
+                   xlab = xlab_text,
+                   ylab = ifelse(grepl("slope", model_name), "Effect size Beta", "Effect size Z"),
+                   group = "study_ID",
+                   k = TRUE, g = TRUE,
+                   legend.pos = "top.left") +
+       theme(
+         axis.text.x = element_text(size = 12, colour = "black"),
+         axis.text.y = element_text(size = 12, colour = "black"),
+         axis.title.x = element_text(size = 12, colour = "black"),
+         plot.title = element_text(size = 12, colour = "black"))
+
+  ggsave(
+    filename = paste0("Studies_scripts/figures/bubble_", clean_filename(model_name), ".pdf"),
+    plot = p,
+    width = 6, height = 5, units = "in"
+  )
+}
+
+
+library(patchwork)
+clean_filename_1 <- function(x) gsub("[^[:alnum:]_]", "_", x)
+
+
+facet_bubble_plots_by_moderator <- function(diversity_models, out_dir = "Studies_scripts/figures") {
+
+  short_labels <- c(
+    "family.0001" = "family",
+    "family.no_art" = "family (no artifacts)",
+    "genus.0001" = "genus",
+    "genus.no_art" = "genus (no artifacts)"
+  )
+
+  # Extract moderator and effect type from model name
+  extract_info <- function(name) {
+    parts <- str_split(name, "_")[[1]]
+    list(
+      effect = ifelse("slope" %in% parts, "slope", "z"),
+      moderator = parts[2],
+      dataset = sub(".*_(family.*|genus.*)$", "\\1", name),
+      full_name = name
+    )
+  }
+
+  model_info <- lapply(names(diversity_models), extract_info) %>% bind_rows()
+
+  model_info$label <- short_labels[model_info$dataset]
+
+  # Group by moderator and effect type
+  grouped <- model_info %>% group_by(moderator, effect) %>% group_split()
+
+  for (group in grouped) {
+    mod <- unique(group$moderator)
+    eff <- unique(group$effect)
+
+    plots <- list()
+
+    for (i in seq_len(nrow(group))) {
+      name <- group$full_name[i]
+      model <- diversity_models[[name]]
+      label <- group$label[i]
+
+      mod_cols <- setdiff(colnames(model$X), "(Intercept)")
+      if (length(mod_cols) == 0) next
+      mod_term <- mod_cols[1]
+      if (mod_term == "intrcpt" && ncol(model$X) > 1) mod_term <- colnames(model$X)[2]
+
+      xlab_text <- case_when(
+        grepl("log_fava", name) ~ "FAVA (log)",
+        grepl("sqrt_freq", name) ~ "Inverse sampling frequency (sqrt)",
+        grepl("rate_change", name) ~ "Time lag slope",
+        grepl("average_turnover", name) ~ "Average turnover",
+        grepl("pub_year", name) ~ "Mean-centered publication year",
+        TRUE ~ mod_term
+      )
+
+      ylab_text <- ifelse(eff == "slope", "Effect size Beta", "Effect size Z")
+
+      p <- bubble_plot(model,
+                       mod = mod_term,
+                       xlab = xlab_text,
+                       ylab = ylab_text,
+                       group = "study_ID",
+                       k = FALSE, g = FALSE,
+                       legend.pos = "top.left") +
+        ggtitle(label) +
+        theme(
+          axis.text.x = element_text(size = 10, colour = "black"),
+          axis.text.y = element_text(size = 10, colour = "black"),
+          axis.title.x = element_text(size = 11, colour = "black"),
+          axis.title.y = element_text(size = 11, colour = "black"),
+          plot.title = element_text(size = 12, face = "bold", hjust = 0.5)
+        )
+
+      plots[[length(plots) + 1]] <- p
+    }
+
+    if (length(plots) > 0) {
+      # Facet wrap in groups of 4
+      plot_chunks <- split(plots, ceiling(seq_along(plots) / 4))
+      for (j in seq_along(plot_chunks)) {
+        fig <- wrap_plots(plot_chunks[[j]], ncol = 2)
+
+        filename <- paste0(
+          out_dir, "/facet_", mod, "_", eff, "_group", j, ".pdf"
+        )
+
+        ggsave(filename, fig, width = 10, height = 10, units = "in")
+        message("Saved: ", filename)
+      }
+    }
+  }
+}
+
+#run in the console
+facet_bubble_plots_by_moderator(diversity_models)
+
+
+```
+
+
+5. Regress by antibiotics, probiotics, disease, location, infant?
+```{r}
+antibiotic_models <- list()
+
+for (name in names(datasets)) {
+  dat <- datasets[[name]]
+  level <- ifelse(grepl("genus", name), "genus", "family")
+
+  # Filter for distinct taxa > 9
+  min_taxa_col <- ifelse(level == "family", "distinct_families", "distinct_genera")
+  dat <- dat[dat[[min_taxa_col]] > 9, ]
+
+  # Rho (z)
+  model_z <- rma.mv(
+    yi = z,
+    V = v,
+    mods = ~ development + disease + sustained_probiotic + sustained_antibiotic,
+    random = list(~1 | study_ID, ~1 | subject_id, ~1 | biome_ID),
+    method = "REML",
+    test = "t",
+    data = dat,
+    sparse = TRUE
+  )
+  antibiotic_models[[paste0("antibiotic_z_", name)]] <- model_z
+
+  # Slope (beta)
+  model_slope <- rma.mv(
+    yi = slope,
+    V = ste,
+    mods = ~ development + disease + sustained_probiotic + sustained_antibiotic,
+    random = list(~1 | study_ID, ~1 | subject_id, ~1 | biome_ID),
+    method = "REML",
+    test = "t",
+    data = dat,
+    sparse = TRUE
+  )
+  antibiotic_models[[paste0("antibiotic_slope_", name)]] <- model_slope
+}
+
+antibiotic_summary <- extract_model_summary(antibiotic_models)
+write.csv(antibiotic_summary, "Studies_scripts/antibiotic_model_summary.csv", row.names = FALSE)
+
+# Bubble plots for each moderator in the antibiotic models
+for (model_name in names(antibiotic_models)) {
+  model <- antibiotic_models[[model_name]]
+
+  mod_terms <- setdiff(colnames(model$X), "(Intercept)")
+  for (mod_term in mod_terms) {
+    p <- bubble_plot(model,
+                     mod = mod_term,
+                     xlab = mod_term,
+                     ylab = ifelse(grepl("slope", model_name), "Effect size Beta", "Effect size Z"),
+                     group = "study_ID",
+                     k = TRUE, g = TRUE,
+                     legend.pos = "top.left") +
+         ggtitle(paste("Bubble plot:", mod_term, "in", model_name)) +
+         theme(
+           axis.text.x = element_text(size = 12, colour = "black"),
+           axis.text.y = element_text(size = 12, colour = "black"),
+           axis.title.x = element_text(size = 12, colour = "black"),
+           plot.title = element_text(size = 12, colour = "black"))
+
+    ggsave(
+      filename = paste0("Studies_scripts/figures/bubble_", clean_filename(model_name), "_", mod_term, ".pdf"),
+      plot = p,
+      width = 6, height = 5, units = "in"
+    )
+  }
+}
+```
+
+
+6. Miscellaneous
+```{r}
+####A look at the relationship between biome and some of these predictors I used
+just_biome <- cleaned_datasets$family.0001
+
+kruskal.test(just_biome$log_fava ~ just_biome$true_biome)
+boxplot(log_fava ~ true_biome, data = just_biome,
+        xlab = "Biome", ylab = "FAVA (log)",
+        main = "FAVA across Biomes", col = "lightgray")
+
+kruskal.test(just_biome$Richprop ~ just_biome$true_biome)
+boxplot(Richprop ~ true_biome, data = just_biome,
+        xlab = "Biome", ylab = "Proportion of variation due to richness",
+        main = "Richness proportion across Biomes", col = "lightgray")
+
+kruskal.test(just_biome$average_turnover ~ just_biome$true_biome)
+boxplot(average_turnover ~ true_biome, data = just_biome,
+        xlab = "Biome", ylab = "Average turnover",
+        main = "Average turnover across biomes", col = "lightgray")
+
+#####DISTRIBUTION OF ARTIFACTS ACROSS BIOMES!!!!!
+###Adding these in case I add more analyses later
+all_removed
+all_removed_notax <- all_removed[,c(11,12)]
+
+reason_counts <- all_removed_notax %>%
+  group_by(source_table, reason) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  pivot_wider(names_from = reason, values_from = count, values_fill = 0)
+
+all_removed_usable_comb <- right_join(
+  reason_counts,
+  family.0001_complete,
+  by = c("source_table" = "ID")
+)
+
+reason_cols <- setdiff(names(reason_counts), "source_table")
+
+all_removed_usable_comb[reason_cols] <- lapply(
+  all_removed_usable_comb[reason_cols],
+  function(x) ifelse(is.na(x), 0, x)
+)
+
+all_removed_usable_comb$dynamic <- all_removed_usable_comb$richness - (all_removed_usable_comb$`0_to_1` + all_removed_usable_comb$all_1s + all_removed_usable_comb$`1_to_0`)
+
+plot_data <- all_removed_usable_comb %>%
+  select(true_biome, all_1s, `0_to_1`, `1_to_0`, dynamic) %>%
+  pivot_longer(cols = c(all_1s, `0_to_1`, `1_to_0`, dynamic),
+               names_to = "reason",
+               values_to = "count")
+plot_data_prop <- plot_data %>%
+  group_by(true_biome) %>%
+  mutate(prop = count / sum(count)) %>%
+  ungroup()
+
+ggplot(plot_data_prop, aes(x = true_biome, y = prop, fill = reason)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Biome", y = "Proportion", fill = "Reason",
+       title = "Proportional Bar Plot of Transition Reasons by Biome") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+contingency_table <- all_removed_usable_comb %>%
+  select(true_biome, all_1s, `0_to_1`, `1_to_0`, dynamic) %>%
+  pivot_longer(cols = c(all_1s, `0_to_1`, `1_to_0`, dynamic),
+               names_to = "reason", values_to = "count") %>%
+  group_by(true_biome, reason) %>%
+  summarise(count = sum(count), .groups = "drop") %>%
+  pivot_wider(names_from = true_biome, values_from = count, values_fill = 0)
+
+# Convert to matrix and run chi-squared test
+chisq_result <- chisq.test(as.matrix(contingency_table[,-1]))
+chisq_result
+
+######Families
+genus_ce_no_art #Issue with the genus data - I forgot to screen for numbered genera so this might create some artifacts
+family_ce_no_art
+name_updates <- data.frame(old_names = c("Lawsonella", "Intestinimonas", "Howardella"),
+                           new_names = c("Lawsonellaceae", "Eubacteriales_Incertae_Sedis(Intestinimonas)", "Clostridiales_Incertae_Sedis"))
+
+names_to_remove <- c("Burkholderiales_noname", "Clostridiales_noname", "Bacteroidales_noname", "Bacteroidales", "Clostridiales", "Candidatus", "butyrate-producing", "Paucibacter", "Gemella", "Epulopiscium")
+
+family_ce_no_art <- family_ce_no_art %>%
+  mutate(Group = ifelse(Group %in% name_updates$old_names,
+                        name_updates$new_names[match(Group, name_updates$old_names)],
+                        Group))
+
+family_ce_no_art <- family_ce_no_art %>%
+  filter(!Group %in% names_to_remove)
+##Done
+
+#' Compute standardized c- and persistence ranks for each family across subjects
+#' and generate a plot showing their median ranks and variation
+make_colonization_persistence_plot <- function(df) {
+  library(dplyr)
+  library(ggplot2)
+  library(tidyr)
+  library(forcats)
+
+  # Add persistence
+  df <- df %>% mutate(persistence = 1 / e)
+
+  # Rank within each subject
+  ranked_df <- df %>%
+    group_by(ID) %>%
+    mutate(
+      c_rank = rank(-c, ties.method = "average"),
+      p_rank = rank(-persistence, ties.method = "average")
+    ) %>%
+    group_by(ID) %>%
+    mutate(
+      c_rank_scaled = (c_rank - min(c_rank)) / (max(c_rank) - min(c_rank)),
+      p_rank_scaled = (p_rank - min(p_rank)) / (max(p_rank) - min(p_rank))
+    ) %>%
+    ungroup()
+
+  # Reshape to long format for plotting
+  long_ranked <- ranked_df %>%
+    select(Group, ID, c_rank_scaled, p_rank_scaled) %>%
+    pivot_longer(cols = c(c_rank_scaled, p_rank_scaled),
+                 names_to = "rank_type", values_to = "rank")
+
+  # Study count per family
+  family_study_counts <- long_ranked %>%
+    group_by(Group) %>%
+    summarise(study_count = n_distinct(ID), .groups = "drop")
+
+  # Wilcoxon signed-rank test for c vs. p ranks
+  pvals_df <- long_ranked %>%
+    pivot_wider(names_from = rank_type, values_from = rank) %>%
+    group_by(Group) %>%
+    summarise(
+      pval = tryCatch(
+        wilcox.test(c_rank_scaled, p_rank_scaled, paired = TRUE)$p.value,
+        error = function(e) NA_real_
+      ), .groups = "drop"
+    ) %>%
+    mutate(star = case_when(
+      is.na(pval) ~ "",
+      pval < 0.001 ~ "***",
+      pval < 0.01 ~ "**",
+      pval < 0.05 ~ "*",
+      TRUE ~ ""
+    ))
+
+  # Summary stats
+  summary_df <- long_ranked %>%
+    group_by(Group, rank_type) %>%
+    summarise(
+      median_rank = median(rank, na.rm = TRUE),
+      q25 = quantile(rank, 0.25, na.rm = TRUE),
+      q75 = quantile(rank, 0.75, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    left_join(family_study_counts, by = "Group") %>%
+    left_join(pvals_df, by = "Group") %>%
+    mutate(label = paste0(Group, star, " (n=", study_count, ")"))
+
+  # Order families by c_rank median for plotting
+  order_levels <- summary_df %>%
+    filter(rank_type == "c_rank_scaled") %>%
+    arrange(desc(median_rank)) %>%
+    pull(label)
+  summary_df$label <- factor(summary_df$label, levels = order_levels)
+
+  # Plot
+  p <- ggplot(summary_df, aes(x = median_rank, y = label, color = rank_type)) +
+    geom_point(position = position_dodge(width = 0.5)) +
+    geom_errorbarh(aes(xmin = q25, xmax = q75), height = 0.3,
+                   position = position_dodge(width = 0.5)) +
+    scale_color_manual(values = c("c_rank_scaled" = "steelblue", "p_rank_scaled" = "darkorange"),
+                       labels = c("Colonization rank", "Persistence rank")) +
+    labs(x = "Standardized rank (0 = lowest, 1 = highest)", y = "Family (Study Count)",
+         color = "Rank type",
+         title = "Colonization and Persistence Ranks by Family") +
+    theme_minimal() +
+    theme(axis.text.y = element_text(size = 8),
+          axis.text.x = element_text(size = 10),
+          legend.position = "top")
+
+  return(p)
+}
+
+
+##by biome now
+#' Compute standardized c- and persistence ranks for each family across subjects,
+#' grouped by biome, and generate a plot per biome
+make_colonization_persistence_plots_by_biome <- function(df, biome_lookup) {
+  library(dplyr)
+  library(ggplot2)
+  library(tidyr)
+  library(forcats)
+  library(purrr)
+
+  # Merge in biome information
+  df <- df %>% left_join(biome_lookup, by = "ID")
+
+  # Add persistence
+  df <- df %>% mutate(persistence = 1 / e)
+
+  # Rank within each subject
+  ranked_df <- df %>%
+    group_by(ID) %>%
+    mutate(
+      c_rank = rank(-c, ties.method = "average"),
+      p_rank = rank(-persistence, ties.method = "average")
+    ) %>%
+    group_by(ID) %>%
+    mutate(
+      c_rank_scaled = (c_rank - min(c_rank)) / (max(c_rank) - min(c_rank)),
+      p_rank_scaled = (p_rank - min(p_rank)) / (max(p_rank) - min(p_rank))
+    ) %>%
+    ungroup()
+
+  # Reshape to long format
+  long_ranked <- ranked_df %>%
+    select(true_biome, Group, ID, c_rank_scaled, p_rank_scaled) %>%
+    pivot_longer(cols = c(c_rank_scaled, p_rank_scaled),
+                 names_to = "rank_type", values_to = "rank")
+
+  # Perform Wilcoxon tests per Group x biome
+  pvals_df <- long_ranked %>%
+    pivot_wider(names_from = rank_type, values_from = rank) %>%
+    group_by(true_biome, Group) %>%
+    summarise(
+      pval = tryCatch(
+        wilcox.test(c_rank_scaled, p_rank_scaled, paired = TRUE)$p.value,
+        error = function(e) NA_real_
+      ), .groups = "drop"
+    ) %>%
+    mutate(star = case_when(
+      is.na(pval) ~ "",
+      pval < 0.001 ~ "***",
+      pval < 0.01 ~ "**",
+      pval < 0.05 ~ "*",
+      TRUE ~ ""
+    ))
+
+  # Study count per family per biome
+  family_study_counts <- long_ranked %>%
+    group_by(true_biome, Group) %>%
+    summarise(study_count = n_distinct(ID), .groups = "drop")
+
+  # Summary stats
+  summary_df <- long_ranked %>%
+    group_by(true_biome, Group, rank_type) %>%
+    summarise(
+      median_rank = median(rank, na.rm = TRUE),
+      q25 = quantile(rank, 0.25, na.rm = TRUE),
+      q75 = quantile(rank, 0.75, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    left_join(family_study_counts, by = c("true_biome", "Group")) %>%
+    left_join(pvals_df, by = c("true_biome", "Group")) %>%
+    mutate(label = paste0(Group, star, " (n=", study_count, ")"))
+
+  # Split by biome and return a list of ggplot objects
+  plots_by_biome <- summary_df %>%
+    split(.$true_biome) %>%
+    map(function(biome_df) {
+      # order labels by c_rank median
+      order_levels <- biome_df %>%
+        filter(rank_type == "c_rank_scaled") %>%
+        arrange(desc(median_rank)) %>%
+        pull(label)
+      biome_df$label <- factor(biome_df$label, levels = order_levels)
+
+      ggplot(biome_df, aes(x = median_rank, y = label, color = rank_type)) +
+        geom_point(position = position_dodge(width = 0.5)) +
+        geom_errorbarh(aes(xmin = q25, xmax = q75), height = 0.3,
+                       position = position_dodge(width = 0.5)) +
+        scale_color_manual(values = c("c_rank_scaled" = "steelblue", "p_rank_scaled" = "darkorange"),
+                           labels = c("Colonization rank", "Persistence rank")) +
+        labs(x = "Standardized rank (0 = lowest, 1 = highest)", y = "Family (Study Count)",
+             color = "Rank type",
+             title = paste("Colonization and Persistence Ranks:", unique(biome_df$true_biome))) +
+        theme_minimal() +
+        theme(
+          axis.text.y = element_text(size = 7),
+          axis.text.x = element_text(size = 10),
+          legend.position = "top"
+        )
+    })
+
+  return(plots_by_biome)
+}
+
+#' Plot colonization and persistence ranks across all subjects
+#' Only includes families with significant paired differences
+make_colonization_persistence_plot_sigonly <- function(df) {
+  library(dplyr)
+  library(ggplot2)
+  library(tidyr)
+  library(forcats)
+
+  # Add persistence
+  df <- df %>% mutate(persistence = 1 / e)
+
+  # Rank within each subject
+  ranked_df <- df %>%
+    group_by(ID) %>%
+    mutate(
+      c_rank = rank(-c, ties.method = "average"),
+      p_rank = rank(-persistence, ties.method = "average")
+    ) %>%
+    group_by(ID) %>%
+    mutate(
+      c_rank_scaled = (c_rank - min(c_rank)) / (max(c_rank) - min(c_rank)),
+      p_rank_scaled = (p_rank - min(p_rank)) / (max(p_rank) - min(p_rank))
+    ) %>%
+    ungroup()
+
+  # Reshape to long format for plotting
+  long_ranked <- ranked_df %>%
+    select(Group, ID, c_rank_scaled, p_rank_scaled) %>%
+    pivot_longer(cols = c(c_rank_scaled, p_rank_scaled),
+                 names_to = "rank_type", values_to = "rank")
+
+  # Study count per family
+  family_study_counts <- long_ranked %>%
+    group_by(Group) %>%
+    summarise(study_count = n_distinct(ID), .groups = "drop")
+
+  # Wilcoxon signed-rank test for c vs. p ranks
+  pvals_df <- long_ranked %>%
+    pivot_wider(names_from = rank_type, values_from = rank) %>%
+    group_by(Group) %>%
+    summarise(
+      pval = tryCatch(
+        wilcox.test(c_rank_scaled, p_rank_scaled, paired = TRUE)$p.value,
+        error = function(e) NA_real_
+      ), .groups = "drop"
+    ) %>%
+    mutate(star = case_when(
+      is.na(pval) ~ "",
+      pval < 0.001 ~ "***",
+      pval < 0.01 ~ "**",
+      pval < 0.05 ~ "*",
+      TRUE ~ ""
+    )) %>%
+    filter(star != "")  # keep only significant
+
+  # Summary stats
+  summary_df <- long_ranked %>%
+    group_by(Group, rank_type) %>%
+    summarise(
+      median_rank = median(rank, na.rm = TRUE),
+      q25 = quantile(rank, 0.25, na.rm = TRUE),
+      q75 = quantile(rank, 0.75, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    left_join(family_study_counts, by = "Group") %>%
+    left_join(pvals_df, by = "Group") %>%
+    filter(!is.na(star)) %>%
+    mutate(label = paste0(Group, star, " (n=", study_count, ")"))
+
+  # Order families by c_rank median for plotting
+  order_levels <- summary_df %>%
+    filter(rank_type == "c_rank_scaled") %>%
+    arrange(desc(median_rank)) %>%
+    pull(label)
+  summary_df$label <- factor(summary_df$label, levels = order_levels)
+
+  # Plot
+  p <- ggplot(summary_df, aes(x = median_rank, y = label, color = rank_type)) +
+    geom_point(position = position_dodge(width = 0.5)) +
+    geom_errorbarh(aes(xmin = q25, xmax = q75), height = 0.3,
+                   position = position_dodge(width = 0.5)) +
+    scale_color_manual(values = c("c_rank_scaled" = "steelblue", "p_rank_scaled" = "darkorange"),
+                       labels = c("Colonization", "Persistence")) +
+    labs(x = "Standardized rank", y = "Family (Study Count)",
+         color = "Rank type",
+         title = "Colonization/persistence ranks"
+         ) +
+    theme_minimal() +
+    theme(axis.text.y = element_text(size = 8),
+          axis.text.x = element_text(size = 10),
+          legend.position = "top")
+
+  return(p)
+}
+
+
+#' Plot per-biome colonization/persistence ranks for significantly different families
+make_colonization_persistence_plots_by_biome_sigonly <- function(df, biome_lookup) {
+  library(dplyr)
+  library(ggplot2)
+  library(tidyr)
+  library(forcats)
+  library(purrr)
+
+  # Merge in biome information
+  df <- df %>% left_join(biome_lookup, by = "ID")
+  df <- df %>% mutate(persistence = 1 / e)
+
+  ranked_df <- df %>%
+    group_by(ID) %>%
+    mutate(
+      c_rank = rank(-c, ties.method = "average"),
+      p_rank = rank(-persistence, ties.method = "average")
+    ) %>%
+    group_by(ID) %>%
+    mutate(
+      c_rank_scaled = (c_rank - min(c_rank)) / (max(c_rank) - min(c_rank)),
+      p_rank_scaled = (p_rank - min(p_rank)) / (max(p_rank) - min(p_rank))
+    ) %>%
+    ungroup()
+
+  long_ranked <- ranked_df %>%
+    select(true_biome, Group, ID, c_rank_scaled, p_rank_scaled) %>%
+    pivot_longer(cols = c(c_rank_scaled, p_rank_scaled),
+                 names_to = "rank_type", values_to = "rank")
+
+  # Wilcoxon tests per group per biome
+  pvals_df <- long_ranked %>%
+    pivot_wider(names_from = rank_type, values_from = rank) %>%
+    group_by(true_biome, Group) %>%
+    summarise(pval = tryCatch(
+      wilcox.test(c_rank_scaled, p_rank_scaled, paired = TRUE)$p.value,
+      error = function(e) NA_real_
+    ), .groups = "drop") %>%
+    mutate(star = case_when(
+      is.na(pval) ~ "",
+      pval < 0.001 ~ "***",
+      pval < 0.01 ~ "**",
+      pval < 0.05 ~ "*",
+      TRUE ~ ""
+    )) %>%
+    filter(star != "")
+
+  family_study_counts <- long_ranked %>%
+    group_by(true_biome, Group) %>%
+    summarise(study_count = n_distinct(ID), .groups = "drop")
+
+  summary_df <- long_ranked %>%
+    group_by(true_biome, Group, rank_type) %>%
+    summarise(
+      median_rank = median(rank, na.rm = TRUE),
+      q25 = quantile(rank, 0.25, na.rm = TRUE),
+      q75 = quantile(rank, 0.75, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    left_join(family_study_counts, by = c("true_biome", "Group")) %>%
+    left_join(pvals_df, by = c("true_biome", "Group")) %>%
+    filter(!is.na(star)) %>%
+    mutate(label = paste0(Group, star, " (n=", study_count, ")"))
+
+  plots_by_biome <- summary_df %>%
+    split(.$true_biome) %>%
+    map(function(biome_df) {
+      order_levels <- biome_df %>%
+        filter(rank_type == "c_rank_scaled") %>%
+        arrange(desc(median_rank)) %>%
+        pull(label)
+      biome_df$label <- factor(biome_df$label, levels = order_levels)
+
+      ggplot(biome_df, aes(x = median_rank, y = label, color = rank_type)) +
+        geom_point(position = position_dodge(width = 0.5)) +
+        geom_errorbarh(aes(xmin = q25, xmax = q75), height = 0.3,
+                       position = position_dodge(width = 0.5)) +
+        scale_color_manual(values = c("c_rank_scaled" = "steelblue", "p_rank_scaled" = "darkorange"),
+                           labels = c("Colonization", "Persistence")) +
+        labs(x = "Standardized rank", y = "Family (Study Count)",
+             color = "Rank type",
+             title = paste("Colonization/persistence ranks", unique(biome_df$true_biome))) +
+        theme_minimal() +
+        theme(
+          axis.text.y = element_text(size = 7),
+          axis.text.x = element_text(size = 10),
+          legend.position = "top"
+        )
+    })
+
+  return(plots_by_biome)
+}
+
+
+make_colonization_persistence_plot(family_ce_no_art)
+make_colonization_persistence_plots_by_biome(family_ce_no_art, family.0001_complete)
+make_colonization_persistence_plot_sigonly(family_ce_no_art)
+make_colonization_persistence_plots_by_biome_sigonly(family_ce_no_art, family.0001_complete)
+
+##########Summarizing reasons for removal by family
+#' Create proportional bar plot showing reasons for removal per family
+plot_removal_reason_by_family <- function(df, df_biome) {
+  library(dplyr)
+  library(ggplot2)
+  library(tidyr)
+
+  df <- df %>% left_join(df_biome, by = c("source_table" = "ID")) %>% filter(!is.na(true_biome))
+
+  df_clean <- df %>%
+    filter(!is.na(family) & family != "") %>%
+    group_by(family, reason) %>%
+    summarise(n = n(), .groups = "drop") %>%
+    group_by(family) %>%
+    mutate(
+      total = sum(n),
+      prop = n / total,
+      label = paste0(family, " (n=", total, ")")
+    ) %>%
+    ungroup()
+
+  ggplot(df_clean, aes(x = prop, y = reorder(label, prop), fill = reason)) +
+    geom_col(position = "stack") +
+    labs(x = "Proportion of removals", y = "Family (count)", fill = "Reason",
+         title = "Removal Reason Breakdown by Family") +
+    theme_minimal() +
+    theme(axis.text.y = element_text(size = 8))
+}
+
+
+#' Create proportional bar plot faceted by biome (requires joining)
+plot_removal_reason_by_family_biome <- function(df_removal, df_biome) {
+  library(dplyr)
+  library(ggplot2)
+  library(tidyr)
+
+  df_joined <- df_removal %>%
+    left_join(df_biome, by = c("source_table" = "ID")) %>%
+    filter(!is.na(true_biome) & !is.na(family) & family != "")
+
+  df_summary <- df_joined %>%
+    group_by(true_biome, family, reason) %>%
+    summarise(n = n(), .groups = "drop") %>%
+    group_by(true_biome, family) %>%
+    mutate(
+      total = sum(n),
+      prop = n / total,
+      label = paste0(family, " (n=", total, ")")
+    ) %>%
+    ungroup()
+
+  ggplot(df_summary, aes(x = prop, y = reorder(label, prop), fill = reason)) +
+    geom_col(position = "stack") +
+    facet_wrap(~true_biome, scales = "free_y") +
+    labs(x = "Proportion of removals", y = "Family (count)", fill = "Reason",
+         title = "Removal Reasons by Family and Biome") +
+    theme_minimal() +
+    theme(axis.text.y = element_text(size = 6))
+}
+
+##removing some families that aren't families
+name_updates <- data.frame(old_names = c("Lawsonella", "Intestinimonas", "Howardella"),
+                           new_names = c("Lawsonellaceae", "Eubacteriales_Incertae_Sedis(Intestinimonas)", "Clostridiales_Incertae_Sedis"))
+
+names_to_remove <- c("Burkholderiales_noname", "Clostridiales_noname", "Bacteroidales_noname", "Bacteroidales", "Clostridiales", "Candidatus", "butyrate-producing", "Paucibacter", "Gemella", "Epulopiscium")
+
+all_removed <- all_removed %>%
+  mutate(family = ifelse(family %in% name_updates$old_names,
+                        name_updates$new_names[match(family, name_updates$old_names)],
+                        family))
+
+all_removed <- all_removed %>%
+  filter(!family %in% names_to_remove)
+
+plot_removal_reason_by_family(all_removed, family.0001_complete)
+plot_removal_reason_by_family_biome(all_removed, family.0001_complete)
+
+
+
+```
+
+```{r}
+###goofing around
+view(family.0001_complete)
+
+standardize_columns <- function(df) {
+  # Rename columns if present
+  if ("distinct_families" %in% names(df)) {
+    names(df)[names(df) == "distinct_families"] <- "distinct_taxa"
+  }
+  if ("distinct_genera" %in% names(df)) {
+    names(df)[names(df) == "distinct_genera"] <- "distinct_taxa"
+  }
+  return(df)
+}
+
+# Apply to all datasets
+datasets_standardized <- lapply(datasets, standardize_columns)
+
+standard_cols <- colnames(datasets_standardized$family.0001[,5:16])
+
+test <- lapply(datasets_standardized, function(df) {
+  # Create a new empty row with standard columns filled with NAs
+  out <- setNames(as.data.frame(matrix(NA, nrow = 1, ncol = length(standard_cols))), standard_cols)
+  
+  # If the target row exists:
+  row <- df[df$ID == "M2184_F4_skin.extra", ] #replicate with M3659_Person.03.3_Foot
+  if (nrow(row) > 0) {
+    # Fill in the matching columns
+    matching_cols <- intersect(names(row), standard_cols)
+    out[1, matching_cols] <- row[1, matching_cols]
+    return(out)
+  } else {
+    return(NULL)
+  }
+})
+
+test_rows <- do.call(rbind, test)
+
+#Do with both M2184_M3_skin.extra and M6638_X1398.1.1.BMIF_nasopharyngeal
+palm_fam.0001 <- family_ce_info[which(family_ce_info$ID == "M2184_M3_skin.extra"),]
+palm_fam_noart <-  family_ce_no_art[which(family_ce_no_art$ID == "M2184_M3_skin.extra"),]
+palm_gen.0001 <- genus_ce_info[which(genus_ce_info$ID == "M2184_M3_skin.extra"),]
+palm_gen_noart <- genus_ce_no_art[which(genus_ce_no_art$ID == "M2184_M3_skin.extra"),]
+
+palm_fam.0001$label <- "M3 palm (family)"
+palm_fam_noart$label <- "M3 palm (family, no artifacts)"
+palm_gen.0001$label <- "M3 palm (genus)"
+palm_gen_noart$label <- "M3 palm (genus, no artifacts)"
+
+# Combine them
+combined_plot_data <- bind_rows(
+  palm_fam.0001,
+  palm_fam_noart,
+  palm_gen.0001,
+  palm_gen_noart
+)
+
+combined_plot_data_fam <- bind_rows(
+  palm_fam.0001,
+  palm_fam_noart
+)
+
+# Create the plot
+ggplot(combined_plot_data, aes(x = log(c), y = log(1/e))) +
+  geom_point(alpha = 0.7) +
+  facet_wrap(~ label, scales = "free") +
+  labs(
+    x = "Colonization (log)",
+    y = "Persistence (log)",
+    title = NULL
+  ) +
+  theme_minimal() +
+  theme(strip.text = element_text(size = 10, face = "bold"))
+
+ggplot(combined_plot_data_fam, aes(x = log(c), y = log(1/e))) +
+  geom_point(alpha = 0.7) +
+  facet_wrap(~ label, scales = "free") +
+  labs(
+    x = "Colonization (log)",
+    y = "Persistence (log)",
+    title = NULL
+  ) +
+  theme_minimal() +
+  theme(strip.text = element_text(size = 10, face = "bold"))
+
+
+#Now with M6638_X1398.1.1.BMIF_nasopharyngeal
+nasopharynx_fam.0001 <- family_ce_info[which(family_ce_info$ID == "M6638_X1398.1.1.BMIF_nasopharyngeal"),]
+nasopharynx_fam_noart <-  family_ce_no_art[which(family_ce_no_art$ID == "M6638_X1398.1.1.BMIF_nasopharyngeal"),]
+nasopharynx_gen.0001 <- genus_ce_info[which(genus_ce_info$ID == "M6638_X1398.1.1.BMIF_nasopharyngeal"),]
+nasopharynx_gen_noart <- genus_ce_no_art[which(genus_ce_no_art$ID == "M6638_X1398.1.1.BMIF_nasopharyngeal"),]
+
+nasopharynx_fam.0001$label <- "1398 nasopharynx (family)"
+nasopharynx_fam_noart$label <- "1398 nasopharynx (family, no artifacts)"
+nasopharynx_gen.0001$label <- "1398 nasopharynx (genus)"
+nasopharynx_gen_noart$label <- "1398 nasopharynx (genus, no artifacts)"
+
+# Combine them
+combined_plot_data <- bind_rows(
+  nasopharynx_fam.0001,
+  nasopharynx_fam_noart,
+  nasopharynx_gen.0001,
+  nasopharynx_gen_noart
+)
+
+combined_plot_data_fam <- bind_rows(
+  nasopharynx_fam.0001,
+  nasopharynx_fam_noart
+)
+
+# Create the plot
+ggplot(combined_plot_data, aes(x = log(c), y = log(1/e))) +
+  geom_point(alpha = 0.7) +
+  facet_wrap(~ label, scales = "free") +
+  labs(
+    x = "Colonization (log)",
+    y = "Persistence (log)",
+    title = NULL
+  ) +
+  theme_minimal() +
+  theme(strip.text = element_text(size = 10, face = "bold"))
+
+ggplot(combined_plot_data_fam, aes(x = log(c), y = log(1/e))) +
+  geom_point(alpha = 0.7) +
+  facet_wrap(~ label, scales = "free") +
+  labs(
+    x = "Colonization (log)",
+    y = "Persistence (log)",
+    title = NULL
+  ) +
+  theme_minimal() +
+  theme(strip.text = element_text(size = 10, face = "bold"))
+
+#M5196_UT39_vaginal
+vagina_fam.0001 <- family_ce_info[which(family_ce_info$ID == "M5196_UT39_vaginal"),]
+vagina_fam_noart <-  family_ce_no_art[which(family_ce_no_art$ID == "M5196_UT39_vaginal"),]
+vagina_gen.0001 <- genus_ce_info[which(genus_ce_info$ID == "M5196_UT39_vaginal"),]
+vagina_gen_noart <- genus_ce_no_art[which(genus_ce_no_art$ID == "M5196_UT39_vaginal"),]
+
+vagina_fam.0001$label <- "UT39 vagina (family)"
+vagina_fam_noart$label <- "UT39 vagina (family, no artifacts)"
+vagina_gen.0001$label <- "UT39 vagina (genus)"
+vagina_gen_noart$label <- "UT39 vagina (genus, no artifacts)"
+
+# Combine them
+combined_plot_data <- bind_rows(
+  vagina_fam.0001,
+  vagina_fam_noart,
+  vagina_gen.0001,
+  vagina_gen_noart
+)
+
+combined_plot_data_fam <- bind_rows(
+  vagina_fam.0001,
+  vagina_fam_noart
+)
+
+# Create the plot
+ggplot(combined_plot_data, aes(x = log(c), y = log(1/e))) +
+  geom_point(alpha = 0.7) +
+  facet_wrap(~ label, scales = "free") +
+  labs(
+    x = "Colonization (log)",
+    y = "Persistence (log)",
+    title = NULL
+  ) +
+  theme_minimal() +
+  theme(strip.text = element_text(size = 10, face = "bold"))
+
+ggplot(combined_plot_data_fam, aes(x = log(c), y = log(1/e))) +
+  geom_point(alpha = 0.7) +
+  facet_wrap(~ label, scales = "free") +
+  labs(
+    x = "Colonization (log)",
+    y = "Persistence (log)",
+    title = NULL
+  ) +
+  theme_minimal() +
+  theme(strip.text = element_text(size = 10, face = "bold"))
+
+```
+
+```{r}
+
+#dealing with NAs in my binary moderators (replacing with 0s for now)
+cleaned_datasets <- lapply(datasets_slim, function(df) {
+  # Replace NAs with 0s in binary columns
+  bin_vars <- c("disease", "sustained_antibiotic", "sustained_probiotic", "development", "pregnancy")
+  df[bin_vars] <- lapply(df[bin_vars], function(x) {
+    x[is.na(x)] <- 0
+    return(x)
+  })
+
+  # Combine them into a string based on which are 1
+  df$disturbance <- apply(df[bin_vars], 1, function(row) {
+    active_flags <- names(row)[which(row == 1)]
+    if (length(active_flags) == 0) {
+      return("none")  # fallback if no flags are on
+    } else {
+      return(paste(active_flags, collapse = "_"))
+    }
+  })
+
+  # Ensure study_ID is a factor
+  df$study_ID <- as.factor(df$study_ID)
+  df$log_timepoint <- log(df$num_timepoint)
+  df$inverse_timepoint <- 1/(df$log_timepoint)
+  df$log_elapsed <- log(df$time_elapsed)
+  df$log_turnover <- log(df$average_turnover)
+  df$log_fava <- log(df$fava)
+  df$time_standard <- df$time_elapsed/df$num_timepoint
+  df$sqrt_freq <- sqrt(df$time_standard)
+  df$sqrt_ste <- sqrt(df$ste)
+  
+  df$true_biome <- relevel(
+  factor(df$true_biome),
+  ref = "gut"
+)
+
+  return(df)
+})
+
+
+###Doing some multivariate models:
+model <- rma.mv(
+  yi = slope,       
+  V = ste,        
+  mods = ~ true_biome*disease + sustained_antibiotic + sustained_probiotic + development + pregnancy + log_fava + pub_year_simple + sqrt_ste + sqrt_freq,  
+  random = list(~1 | study_ID/subject_id),   
+  data = cleaned_datasets$family.no_art,
+  method = "REML",  
+  test = "t",
+  sparse = TRUE
+)
+
+model <- rma.mv(
+  yi = slope,       
+  V = ste,        
+  mods = ~ pub_year_simple + sqrt_ste + sqrt_freq,  
+  random = list(~1 | study_ID/subject_id),   
+  data = cleaned_datasets$family.no_art,
+  method = "REML",  
+  test = "t",
+  sparse = TRUE
+)
+
+summary(model)
+summary(lm(fava ~ log(num_timepoint), data = cleaned_datasets$family.no_art))
+hist(cleaned_datasets$family.no_art$fava)
+bubble_plot(model,
+                     mod = "average_turnover",
+                     xlab = "average_turnover",
+                     ylab = "slope",
+                     group = "study_ID",
+                     k = TRUE, g = TRUE,
+                     legend.pos = "top.left") +
+         ggtitle(paste("Bubble_plot")) +
+         theme(
+           axis.text.x = element_text(size = 12, colour = "black"),
+           axis.text.y = element_text(size = 12, colour = "black"),
+           axis.title.x = element_text(size = 12, colour = "black"),
+           plot.title = element_text(size = 12, colour = "black"))
+
+#running it on all of them:
+run_meta_model <- function(data, effect_size_col, variance_col, level, no_art = FALSE) {
+  # Filter data based on minimum number of taxa
+  min_taxa_col <- ifelse(level == "family", "distinct_families", "distinct_genera")
+  data_filtered <- data[data[[min_taxa_col]] > 9, ]
+  
+  # Model label
+  art_status <- ifelse(no_art, "no_art", "0001")
+  model_label <- paste0("mod_", ifelse(effect_size_col == "z", "ML_Z", "slope"),
+                        "_full_", substr(level, 1, 3), ".", art_status)
+  
+  cat("##########################\n")
+  cat(model_label, "\n")
+
+  # Try sparse model first
+  try_sparse <- try({
+    model <- rma.mv(
+      yi = data_filtered[[effect_size_col]],
+      V = data_filtered[[variance_col]],
+      mods = ~ true_biome*disease + sustained_antibiotic + sustained_probiotic + development + pregnancy + log_fava,
+      random = list(~1 | study_ID/subject_id),
+      method = "REML",
+      data = data_filtered,
+      sparse = TRUE,
+      test = "t"
+    )
+  }, silent = TRUE)
+
+  # Retry without sparse if error
+  if (inherits(try_sparse, "try-error")) {
+    cat("Model failed with sparse = TRUE, retrying with sparse = FALSE...\n")
+    model <- rma.mv(
+      yi = data_filtered[[effect_size_col]],
+      V = data_filtered[[variance_col]],
+      mods = ~ true_biome*disease + sustained_antibiotic + sustained_probiotic + development + pregnancy + log_fava,
+      random = list(~1 | study_ID/subject_id),
+      method = "REML",
+      data = data_filtered,
+      sparse = FALSE,
+      test = "t"
+    )
+  } else {
+    model <- try_sparse
+  }
+
+  print(summary(model))
+  return(model)
+}
+
+full_models <- list()
+
+for (name in names(cleaned_datasets)) {
+  dat <- cleaned_datasets[[name]]
+  level <- ifelse(grepl("genus", name), "genus", "family")
+  no_art <- grepl("no_art", name)
+  
+  # Z effect size (e.g., transformed correlation)
+  full_models[[paste0("ML_Z_", name)]] <- run_meta_model(
+    dat, effect_size_col = "z", variance_col = "v", level = level, no_art = no_art)
+  
+  # Slope effect size
+  full_models[[paste0("slope_", name)]] <- run_meta_model(
+    dat, effect_size_col = "slope", variance_col = "ste", level = level, no_art = no_art)
+}
+
+full_meta_models <- extract_model_summary(full_models)
+
+write.csv(full_meta_models, "multiple_metaregression_outputs.csv")
+
+```
+
+Adding facet wrapped figures for FAVA and freq, pub_year
+```{r}
+ext_models <- list()
+
+moderators <- list(
+  log_fava = "FAVA (log)",
+  sqrt_freq = "Sampling Frequency (sqrt)",
+  pub_year_simple = "Publication year"
+)
+
+for (name in names(cleaned_datasets)) {
+  dat <- cleaned_datasets[[name]]
+  level <- ifelse(grepl("genus", name), "genus", "family")
+
+  for (mod_name in names(moderators)) {
+    # Rho (z)
+    model_z <- run_meta_model_diversity(dat, moderator = mod_name, level = level, effect_size_col = "z", variance_col = "v")
+    ext_models[[paste0("diversity_", mod_name, "_z_", name)]] <- model_z
+
+    # Slope (beta)
+    model_slope <- run_meta_model_diversity(dat, moderator = mod_name, level = level, effect_size_col = "slope", variance_col = "ste")
+    ext_models[[paste0("diversity_", mod_name, "_slope_", name)]] <- model_slope
+  }
+}
+
+# Save summaries if needed
+ext_summary <- extract_model_summary(ext_models)
+all_bubbles <- c(ext_models, small_models)
+
+facet_bubble_plots_by_moderator(ext_models)
+
+cleaned_datasets$family.0001$pub_year
+
+```
+
+Bias on pipeline type and sequencing platform
+```{r}
+pipeline_platform <- read.csv("Final_study_list.csv")
+#view(pipeline_platform)
+pipeline_platform <- pipeline_platform[,c(3,4,8,9)]
+cleaned_datasets_pipelines <- lapply(cleaned_datasets, function(df){
+  df_merged <- df %>%
+    left_join(pipeline_platform, by = c("study_ID" = "study_code"))
+  df_merged$diseases <- df_merged$disease
+  df_merged$diseases[which(df_merged$diseases == 0)] <- "Healthy"
+  df_merged$diseases[which(df_merged$diseases == 1)] <- "Disease"
+  df_merged$diseases <- relevel(
+  factor(df_merged$diseases),
+  ref = "Healthy")
+  return(df_merged)
+})
+
+model <- rma.mv(
+  yi = z,       
+  V = v,        
+  mods = ~ Analysis_pipeline + Sequencing_platform + experiment_type,  
+  random = list(~1 | study_ID/subject_id),   
+  data = cleaned_datasets_pipelines$family.no_art,
+  method = "REML",  
+  test = "t",
+  sparse = TRUE
+)
+
+#BIAS TESTING FINAL
+bias_models <- list()
+moderators <- list(
+  Analysis_pipeline = "pipeline",
+  Sequencing_platform = "platform",
+  sqrt_freq = "Sampling Frequency (sqrt)",
+  pub_year_simple = "Publication year",
+  experiment_type = "experiment type"
+)
+
+for (name in names(cleaned_datasets_pipelines)) {
+  dat <- cleaned_datasets_pipelines[[name]]
+  level <- ifelse(grepl("genus", name), "genus", "family")
+
+  for (mod_name in names(moderators)) {
+    # Rho (z)
+    model_z <- run_meta_model_diversity(dat, moderator = mod_name, level = level, effect_size_col = "z", variance_col = "v")
+    bias_models[[paste0("diversity_", mod_name, "_z_", name)]] <- model_z
+
+    # Slope (beta)
+    model_slope <- run_meta_model_diversity(dat, moderator = mod_name, level = level, effect_size_col = "slope", variance_col = "ste")
+    bias_models[[paste0("diversity_", mod_name, "_slope_", name)]] <- model_slope
+  }
+}
+
+# Save summaries if needed
+all_biases <- c(bias_models, small_models)
+bias_models_summary <- extract_model_summary(bias_models)
+all_bias_summary <- rbind(bias_models_summary, small_model_table)
+write.csv(all_bias_summary, "all_bias_pipelines.csv")
+view(bias_models_summary)
+
+```
+
+Running the model with the biases
+```{r}
+run_meta_model_bias <- function(data, effect_size_col, variance_col, level, no_art = FALSE) {
+  # Filter data based on minimum number of taxa
+  min_taxa_col <- ifelse(level == "family", "distinct_families", "distinct_genera")
+  data_filtered <- data[data[[min_taxa_col]] > 9, ]
+  
+  # Model label
+  art_status <- ifelse(no_art, "no_art", "0001")
+  model_label <- paste0("mod_", ifelse(effect_size_col == "z", "ML_Z", "slope"),
+                        "_full_", substr(level, 1, 3), ".", art_status)
+  
+  cat("##########################\n")
+  cat(model_label, "\n")
+  data_filtered$sqrt_v <- sqrt(data_filtered[[variance_col]])
+
+  # Try sparse model first
+  try_sparse <- try({
+    model <- rma.mv(
+      yi = data_filtered[[effect_size_col]],
+      V = data_filtered[[variance_col]],
+      mods = ~ true_biome*disease + sustained_antibiotic + sustained_probiotic + development + pregnancy + log_fava + pub_year_simple + sqrt_freq + experiment_type,
+      random = list(~1 | study_ID/subject_id),
+      method = "REML",
+      data = data_filtered,
+      sparse = TRUE,
+      test = "t"
+    )
+  }, silent = TRUE)
+
+  # Retry without sparse if error
+  if (inherits(try_sparse, "try-error")) {
+    cat("Model failed with sparse = TRUE, retrying with sparse = FALSE...\n")
+    model <- rma.mv(
+      yi = data_filtered[[effect_size_col]],
+      V = data_filtered[[variance_col]],
+      mods = ~ true_biome*disease + sustained_antibiotic + sustained_probiotic + development + pregnancy + log_fava + pub_year_simple + sqrt_freq + sqrt_v + experiment_type,
+      random = list(~1 | study_ID/subject_id),
+      method = "REML",
+      data = data_filtered,
+      sparse = FALSE,
+      test = "t"
+    )
+  } else {
+    model <- try_sparse
+  }
+
+  print(summary(model))
+  return(model)
+}
+
+full_models_bias <- list()
+
+for (name in names(cleaned_datasets_pipelines)) {
+  dat <- cleaned_datasets_pipelines[[name]]
+  level <- ifelse(grepl("genus", name), "genus", "family")
+  no_art <- grepl("no_art", name)
+  
+  # Z effect size (e.g., transformed correlation)
+  full_models_bias[[paste0("ML_Z_", name)]] <- run_meta_model_bias(
+    dat, effect_size_col = "z", variance_col = "v", level = level, no_art = no_art)
+  
+  # Slope effect size
+  full_models_bias[[paste0("slope_", name)]] <- run_meta_model_bias(
+    dat, effect_size_col = "slope", variance_col = "ste", level = level, no_art = no_art)
+}
+
+full_meta_models_bias <- extract_model_summary(full_models_bias)
+
+write.csv(full_meta_models_bias, "multiple_metaregression_bias_outputs.csv")
+
+
+```
+
+Last thing: rerunning the meta-analytic means with the new biases
+```{r}
+run_meta_model_bias <- function(data, level = "family", effect_size_col = "z", variance_col = "v") {
+  # Filter based on minimum taxa
+  min_taxa_col <- ifelse(level == "family", "distinct_families", "distinct_genera")
+  data_filtered <- data[data[[min_taxa_col]] > 9, ]
+  data_filtered$sqrt_v <- sqrt(data_filtered[[variance_col]])
+
+  # Fit multilevel model
+  model <- rma.mv(
+    yi = data_filtered[[effect_size_col]],
+    V = data_filtered[[variance_col]],
+    mods = ~ pub_year_simple + sqrt_freq + experiment_type,
+    random = list(
+      ~1 | study_ID,
+      ~1 | subject_id,
+      ~1 | biome_ID
+    ),
+    method = "REML",
+    data = data_filtered,
+    sparse = TRUE
+  )
+
+  return(model)
+}
+
+meta_models_bias <- list()
+
+for (name in names(cleaned_datasets_pipelines)) {
+  dat <- cleaned_datasets_pipelines[[name]]
+  level <- ifelse(grepl("genus", name), "genus", "family")
+
+  # Rho model
+  model_rho <- run_meta_model_bias(dat, level = level, effect_size_col = "z", variance_col = "v")
+  model_name_rho <- paste0("mod_rho_", name)
+  meta_models_bias[[model_name_rho]] <- model_rho
+
+  # Slope model
+  model_slope <- run_meta_model_bias(dat, level = level, effect_size_col = "slope", variance_col = "ste")
+  model_name_slope <- paste0("mod_slope_", name)
+  meta_models_bias[[model_name_slope]] <- model_slope
+}
+
+meta_model_bias_summary <- extract_model_summary(meta_models_bias)
+
+write.csv(meta_model_bias_summary, "meta_means_bias.csv")
+
+```
+
+Making some plots to better understand the multiple regression results
+```{r}
+df <- read.csv("multiple_metaregression_outputs.csv")
+model_names <- c(rep("Effect Size Z: Family (Artefacts)", 14), rep("Effect Size Beta: Family (Artefacts)", 14), rep("Effect Size Z: Family", 14), rep("Effect Size Beta: Family", 14), rep("Effect Size Z: Genus (Artefacts)", 14), rep("Effect Size Beta: Genus (Artefacts)", 14), rep("Effect Size Z: Genus", 14), rep("Effect Size Beta: Genus", 14))
+df$model_name <- model_names
+df <- df[which(str_detect(df$model_name, "Artefacts") == F),]
+
+df <- df %>%
+  mutate(
+    term = fct_recode(term,
+      "Intercept" = "intrcpt",
+      "Body Site: Oral" = "true_biomeoral",
+      "Body Site: Resp." = "true_biomerespiratory",
+      "Body Site: Skin" = "true_biomeskin",
+      "Body Site: Vaginal" = "true_biomevaginal",
+      "Disease" = "disease",
+      "Antibiotics" = "sustained_antibiotic",
+      "Probiotics" = "sustained_probiotic",
+      "Infancy" = "development",
+      "Pregnancy" = "pregnancy",
+      "Log(FAVA)" = "log_fava",
+      "Oral × Disease" = "true_biomeoral:disease",
+      "Resp. × Disease" = "true_biomerespiratory:disease",
+      "Vaginal × Disease" = "true_biomevaginal:disease"
+    ),
+    term = factor(term, levels = rev(unique(term)))  # reverse for top-down
+  )
+
+make_zval_heatmap <- function(df) {
+  df <- df %>%
+    mutate(
+      sig = ifelse(pval < 0.05, "*", ""),
+      term = factor(term, levels = rev(unique(term)))  # reverse for top-down
+    )
+
+  ggplot(df, aes(x = model_name, y = term)) +
+    geom_tile(aes(fill = zval), color = "white") +
+    geom_text(aes(label = sig), size = 4, vjust = 0.5) +
+    scale_fill_gradient2(
+      low = "blue", mid = "white", high = "red", 
+      midpoint = 0, limits = c(-max(abs(df$zval)), max(abs(df$zval))),
+      name = "z-score"
+    ) +
+    labs(x = NULL, y = NULL) +
+    theme_minimal(base_size = 12) +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      panel.grid = element_blank()
+    )
+}
+
+#with biases checked now
+
+make_zval_heatmap(df)
+
+df2 <- read.csv("multiple_metaregression_bias_outputs.csv")
+df2$model_name <- c(rep("Effect Size Z: Family (Artefacts)", 18), rep("Effect Size Beta: Family (Artefacts)", 18), rep("Effect Size Z: Family", 18), rep("Effect Size Beta: Family", 18), rep("Effect Size Z: Genus (Artefacts)", 17), rep("Effect Size Beta: Genus (Artefacts)", 17), rep("Effect Size Z: Genus", 17), rep("Effect Size Beta: Genus", 17))
+
+df2 <- df2 %>%
+  mutate(
+    term = fct_recode(term,
+      "Intercept" = "intrcpt",
+      "Body Site: Oral" = "true_biomeoral",
+      "Body Site: Resp." = "true_biomerespiratory",
+      "Body Site: Skin" = "true_biomeskin",
+      "Body Site: Vaginal" = "true_biomevaginal",
+      "Disease" = "disease",
+      "Antibiotics" = "sustained_antibiotic",
+      "Probiotics" = "sustained_probiotic",
+      "Infancy" = "development",
+      "Pregnancy" = "pregnancy",
+      "Log(FAVA)" = "log_fava",
+      "Publication Year" = "pub_year_simple",
+      "Sampling Freq." = "sqrt_freq",
+      "Exp. Type: Assembly" = "experiment_typeAssembly",
+      "Exp. Type: Metagenomic" = "experiment_typeMetagenomic",
+      "Oral × Disease" = "true_biomeoral:disease",
+      "Resp. × Disease" = "true_biomerespiratory:disease",
+      "Vaginal × Disease" = "true_biomevaginal:disease"
+    ),
+    term = factor(term, levels = rev(unique(term)))  # reverse for top-down
+  )
+
+
+df2 <- df2[which(str_detect(df2$model_name, "Artefacts") == F),]
+make_zval_heatmap(df2)
+
+```
+
+Making figures for disease as a moderator
+```{r}
+run_meta_model_disease <- function(data, level = "family", effect_size_col = "z", variance_col = "v") {
+  # Filter based on minimum taxa
+  min_taxa_col <- ifelse(level == "family", "distinct_families", "distinct_genera")
+  data_filtered <- data[data[[min_taxa_col]] > 9, ]
+  data_filtered$sqrt_v <- sqrt(data_filtered[[variance_col]])
+  data_filtered$biome_disease <- interaction(data_filtered$true_biome, data_filtered$diseases, sep = ":")
+  # Prettify interaction term
+data_filtered$biome_disease_label <- paste0(as.character(data_filtered$true_biome),
+  ": ", as.character(data_filtered$diseases)
+)
+
+levels_ordered <- c(
+  "skin: Healthy",
+  "gut: Healthy", "gut: Disease",
+  "oral: Healthy", "oral: Disease",
+  "respiratory: Healthy", "respiratory: Disease",
+  "vaginal: Healthy", "vaginal: Disease"
+)
+
+data_filtered$biome_disease_label <- factor(
+  data_filtered$biome_disease_label,
+  levels = levels_ordered
+)
+
+  # Fit multilevel model
+  model <- rma.mv(
+    yi = data_filtered[[effect_size_col]],
+    V = data_filtered[[variance_col]],
+    mods = ~ biome_disease_label -1, ##messing around
+    random = list(
+      ~1 | study_ID,
+      ~1 | subject_id,
+      ~1 | biome_ID
+    ),
+    method = "REML",
+    data = data_filtered,
+    sparse = TRUE
+  )
+
+  return(model)
+}
+
+meta_models_disease <- list()
+
+for (name in names(cleaned_datasets_pipelines)) {
+  dat <- cleaned_datasets_pipelines[[name]]
+  level <- ifelse(grepl("genus", name), "genus", "family")
+
+  # Rho model
+  model_rho <- run_meta_model_disease(dat, level = level, effect_size_col = "z", variance_col = "v")
+  model_name_rho <- paste0("mod_rho_", name)
+  meta_models_disease[[model_name_rho]] <- model_rho
+
+  # Slope model
+  model_slope <- run_meta_model_disease(dat, level = level, effect_size_col = "slope", variance_col = "ste")
+  model_name_slope <- paste0("mod_slope_", name)
+  meta_models_disease[[model_name_slope]] <- model_slope
+}
+
+meta_model_disease_summary <- extract_model_summary(meta_models_disease)
+
+biome_base_colors <- c(
+  "skin" = "#1b9e77",
+  "gut" = "#d95f02",
+  "oral" = "#7570b3",
+  "respiratory" = "#e7298a",
+  "vaginal" = "#66a61e"
+)
+library(colorspace)
+label_colors <- c(
+  "Skin: Healthy" = lighten(as.character(biome_base_colors["skin"]), amount = 0.3),
+  "Gut: Healthy" = lighten(as.character(biome_base_colors["gut"]), amount = 0.3),
+  "Gut: Disease" = as.character(biome_base_colors["gut"]),
+  "Oral: Healthy" = lighten(as.character(biome_base_colors["oral"]), amount = 0.3),
+  "Oral: Disease" = as.character(biome_base_colors["oral"]),
+  "Respiratory: Healthy" = lighten(as.character(biome_base_colors["respiratory"]), amount = 0.3),
+  "Respiratory: Disease" = as.character(biome_base_colors["respiratory"]),
+  "Vaginal: Healthy" = lighten(as.character(biome_base_colors["vaginal"]), amount = 0.3),
+  "Vaginal: Disease" = as.character(biome_base_colors["vaginal"])
+)
+
+orchard_plot(meta_models_disease$mod_slope_family.no_art, 
+             mod = "biome_disease_label", 
+             xlab = "Effect size Beta",
+             group = "study_ID",  k = TRUE, g = FALSE, trunk.size = 1.5,)
+
+orchard_plot(
+  meta_models_disease$mod_slope_family.no_art,
+  mod = "biome_disease_label",
+  xlab = "Effect size Beta",
+  group = "study_ID",
+  k = TRUE,
+  g = FALSE,
+  trunk.size = 1.5
+) +
+  scale_color_manual(values = label_colors) +
+  scale_fill_manual(values = label_colors)
+
+
+plot_list_disease <- lapply(names(meta_models_disease)[c(3,4,7,8)], function(name) {
+  model <- meta_models_disease[[name]]
+  
+  # Determine effect type and level
+  effect <- if (str_detect(name, "slope")) "Beta" else "Z"
+  level <- if (str_detect(name, "genus")) "Genus" else "Family"
+  artifact <- if (str_detect(name, "no_art")) "No Artifacts" else "With Artifacts"
+  
+  # Create label
+  plot_title <- paste(level, "-", effect, "-", artifact)
+  
+  # Make orchard plot
+  p <- orchard_plot(
+  model,
+  mod = "biome_disease_label",
+  xlab = paste("Effect size", effect),
+  group = "study_ID",
+  k = TRUE,
+  g = FALSE,
+  trunk.size = 1.5
+) +
+  scale_color_manual(values = label_colors) +
+  scale_fill_manual(values = label_colors)+
+  scale_x_discrete(labels = c("Skin", "Gut", "Gut (Dis.)", "Oral", "Oral (Dis.)", "Resp.", "Resp. (Dis.)", "Vag.", "Vag. (Dis.)"))
+  
+  return(p)
+})
+
+# Combine with patchwork
+library(patchwork)
+combined_plot <- wrap_plots(plotlist = plot_list_disease, ncol = 2)
+combined_plot
+
+
+
+```
+
