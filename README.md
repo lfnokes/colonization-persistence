@@ -89,7 +89,7 @@ devtools::install_github("EBI-Metagenomics/MGnifyR")
 
 ### Running the Pipeline
 
-Run scripts in the following order. Each script depends on outputs from the previous step:
+Run scripts in the following order. It may make sense to skip over certain steps that could be affected by changes in MGnify API structure (Steps 1-3).
 
 1. **`API_query.R`** — Queries the MGnify API to identify longitudinal human microbiome studies. Outputs a filtered list of candidate studies. Requires an internet connection and the `MGnifyR` package. **Note:** most users should skip this step and start at Step 2 (see below).
 
