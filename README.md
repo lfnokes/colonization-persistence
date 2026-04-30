@@ -2,7 +2,7 @@
 
 **Author:** Liam F. Nokes  
 **Institution:** Dartmouth College, Environmental Studies Senior Honors Thesis  
-**Advisor:** Professor Bala Chaudhary  
+**Advisor:** Dr. Bala Chaudhary  
 **Published:** June 2025  
 **Citation:** Nokes, Liam F., "Colonization-Persistence Trade-offs in the Human Microbiome" (2025). *Environmental Studies Senior Theses*. 13. https://digitalcommons.dartmouth.edu/environmental_studies_senior_theses/13
 
