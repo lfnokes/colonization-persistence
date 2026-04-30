@@ -1,4 +1,4 @@
-# Colonization-Persistence Trade-offs in the Human Microbiome
+# Colonization-Persistence Trade-offs in the Human Microbiome (Currently being QC'd)
 
 **Author:** Liam F. Nokes  
 **Institution:** Dartmouth College, Environmental Studies Senior Honors Thesis  
